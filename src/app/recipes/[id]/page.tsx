@@ -123,7 +123,18 @@ export default function RecipeDetailPage() {
       setLoading(false);
       return;
     }
-    setItems((it ?? []) as RecipeItem[]);
+
+    // ✅ Fix for production TS build:
+    // Supabase join can return ingredient as an array; normalise to a single object.
+    const normalisedItems: RecipeItem[] = (it ?? []).map((row: any) => ({
+      id: row.id,
+      qty: row.qty,
+      unit: row.unit,
+      ingredient_id: row.ingredient_id,
+      ingredient: Array.isArray(row.ingredient) ? row.ingredient[0] : row.ingredient,
+    }));
+
+    setItems(normalisedItems);
 
     const { data: ing, error: ingErr } = await supabase
       .from("ingredients")
@@ -238,10 +249,7 @@ export default function RecipeDetailPage() {
     setMessage(null);
     setSavingInstructions(true);
 
-    const { error } = await supabase
-      .from("recipes")
-      .update({ instructions })
-      .eq("id", recipe.id);
+    const { error } = await supabase.from("recipes").update({ instructions }).eq("id", recipe.id);
 
     setSavingInstructions(false);
 
@@ -344,7 +352,12 @@ export default function RecipeDetailPage() {
                   <select
                     value={newCategory}
                     onChange={(e) => setNewCategory(e.target.value)}
-                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      border: "1px solid #ccc",
+                      borderRadius: 8,
+                    }}
                   >
                     {categories.map((c) => (
                       <option key={c} value={c}>
@@ -359,7 +372,12 @@ export default function RecipeDetailPage() {
                   <select
                     value={newDefaultUnit}
                     onChange={(e) => setNewDefaultUnit(e.target.value)}
-                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      border: "1px solid #ccc",
+                      borderRadius: 8,
+                    }}
                   >
                     <option value="each">each</option>
                     <option value="g">g</option>
