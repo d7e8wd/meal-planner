@@ -1,67 +1,49 @@
-"use client";
+import { signIn } from "./actions";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { loginWithPassword } from "./actions";
+export const dynamic = "force-dynamic";
 
 export default function LoginPage() {
-  const router = useRouter();
-
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    setErrorMsg(null);
-
-    try {
-      await loginWithPassword(email, password);
-      router.refresh();
-      router.push("/recipes");
-    } catch (err: any) {
-      setErrorMsg(err?.message ?? "Login failed");
-      setLoading(false);
-    }
-  }
-
   return (
-    <div className="p-6 max-w-sm mx-auto">
-      <h1 className="text-2xl font-semibold mb-4">Login</h1>
+    <div style={{ padding: 40, maxWidth: 480 }}>
+      <h1 style={{ fontSize: 26, fontWeight: 700 }}>Login</h1>
+      <p style={{ marginTop: 8, color: "#666" }}>
+        Sign in to access your household plan, recipes and shopping list.
+      </p>
 
-      <form onSubmit={handleLogin} className="space-y-4">
-        <div>
+      <form action={signIn} style={{ marginTop: 18, display: "grid", gap: 12 }}>
+        <label>
+          <div style={{ fontSize: 14, marginBottom: 6 }}>Email</div>
           <input
+            name="email"
             type="email"
-            placeholder="Email"
-            className="w-full border rounded px-3 py-2"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
             required
+            style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
           />
-        </div>
+        </label>
 
-        <div>
+        <label>
+          <div style={{ fontSize: 14, marginBottom: 6 }}>Password</div>
           <input
+            name="password"
             type="password"
-            placeholder="Password"
-            className="w-full border rounded px-3 py-2"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
             required
+            style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
           />
-        </div>
-
-        {errorMsg && <div className="text-red-600 text-sm">{errorMsg}</div>}
+        </label>
 
         <button
           type="submit"
-          disabled={loading}
-          className="w-full bg-black text-white rounded px-3 py-2"
+          style={{
+            padding: "10px 14px",
+            borderRadius: 10,
+            border: "1px solid #333",
+            background: "#fff",
+            width: 140,
+            cursor: "pointer",
+          }}
         >
-          {loading ? "Signing in..." : "Sign in"}
+          Sign in
         </button>
       </form>
     </div>
