@@ -44,13 +44,17 @@ function mapMealToDb(meal: Exclude<MealKey, "dinner">): "breakfast" | "lunch" | 
   return "snack"; // snack1/snack2 both persist as "snack"
 }
 
-function buildNotes(
-  meal: Exclude<MealKey, "dinner">,
-  person: Exclude<PersonKey, "shared">
-): string {
+function buildNotes(meal: Exclude<MealKey, "dinner">, person: Exclude<PersonKey, "shared">): string {
   // snacks need slot disambiguation; breakfast/lunch just store person
   if (meal === "snack1" || meal === "snack2") return `${person}|${meal}`;
   return person;
+}
+
+function listIdForMeal(meal: MealKey): string {
+  if (meal === "dinner") return "dinner-recipes-list";
+  if (meal === "breakfast") return "breakfast-recipes-list";
+  if (meal === "lunch") return "lunch-recipes-list";
+  return "snack-recipes-list"; // snack1/snack2
 }
 
 export default function PlanGridClient(props: {
@@ -99,6 +103,24 @@ export default function PlanGridClient(props: {
     props.days.forEach((d, idx) => m.set(d.dateOnly, idx));
     return m;
   }, [props.days]);
+
+  const recipesByTag = useMemo(() => {
+    const by = (tag: "breakfast" | "lunch" | "snack" | "dinner") => {
+      const filtered = props.recipes.filter((r) => {
+        const tags = (r.meal_tags ?? []).map(normalise);
+        return tags.includes(tag);
+      });
+      // Fallback to all so dropdown never becomes unusable while you’re still tagging
+      return filtered.length ? filtered : props.recipes;
+    };
+
+    return {
+      breakfast: by("breakfast"),
+      lunch: by("lunch"),
+      snack: by("snack"),
+      dinner: by("dinner"),
+    };
+  }, [props.recipes]);
 
   async function saveDinner(dateOnly: string) {
     const k = `dinner|shared|${dateOnly}`;
@@ -219,9 +241,7 @@ export default function PlanGridClient(props: {
                     list="dinner-recipes-list"
                     value={dinnerVal}
                     placeholder="Select recipe"
-                    onChange={(e) =>
-                      setNameByKey((prev) => ({ ...prev, [dinnerKey]: e.target.value }))
-                    }
+                    onChange={(e) => setNameByKey((prev) => ({ ...prev, [dinnerKey]: e.target.value }))}
                     onFocus={(e) => e.currentTarget.select()}
                     onBlur={() => saveDinner(d.dateOnly)}
                   />
@@ -231,7 +251,7 @@ export default function PlanGridClient(props: {
                   )}
                 </div>
 
-                {/* Per-person meals (persisted; snacks enum-safe) */}
+                {/* Per-person meals */}
                 {MEALS.filter((m) => m.perPerson).map((meal) => (
                   <div key={meal.key} className="space-y-2">
                     <div className="text-sm font-medium">{meal.label}</div>
@@ -249,17 +269,13 @@ export default function PlanGridClient(props: {
                             <div className="text-xs text-gray-500">{p.label}</div>
                             <input
                               className={`w-full rounded border px-3 py-2 text-sm ${bg}`}
-                              list="meal-recipes-list"
+                              list={listIdForMeal(meal.key)}
                               value={val}
                               placeholder="Select"
                               onChange={(e) => handlePerPersonChange(k, e.target.value)}
                               onFocus={(e) => e.currentTarget.select()}
                               onBlur={() =>
-                                savePerPersonMeal(
-                                  meal.key as Exclude<MealKey, "dinner">,
-                                  p.key,
-                                  d.dateOnly
-                                )
+                                savePerPersonMeal(meal.key as Exclude<MealKey, "dinner">, p.key, d.dateOnly)
                               }
                             />
                             <div className="text-xs text-gray-500">{savingKey === k ? "Saving…" : ""}</div>
@@ -277,15 +293,28 @@ export default function PlanGridClient(props: {
           );
         })}
 
+        {/* Datalists */}
         <datalist id="dinner-recipes-list">
-          {props.recipes.map((r) => (
+          {recipesByTag.dinner.map((r) => (
             <option key={r.id} value={r.name} />
           ))}
         </datalist>
 
-        <datalist id="meal-recipes-list">
+        <datalist id="breakfast-recipes-list">
+          {recipesByTag.breakfast.map((r) => (
+            <option key={r.id} value={r.name} />
+          ))}
+        </datalist>
+
+        <datalist id="lunch-recipes-list">
           <option value="Leftovers" />
-          {props.recipes.map((r) => (
+          {recipesByTag.lunch.map((r) => (
+            <option key={r.id} value={r.name} />
+          ))}
+        </datalist>
+
+        <datalist id="snack-recipes-list">
+          {recipesByTag.snack.map((r) => (
             <option key={r.id} value={r.name} />
           ))}
         </datalist>
@@ -363,17 +392,13 @@ export default function PlanGridClient(props: {
                       >
                         <input
                           className={`w-full rounded border px-2 py-1 text-sm ${bg}`}
-                          list="meal-recipes-list"
+                          list={listIdForMeal(meal.key)}
                           value={val}
                           placeholder="Select"
                           onChange={(e) => handlePerPersonChange(k, e.target.value)}
                           onFocus={(e) => e.currentTarget.select()}
                           onBlur={() =>
-                            savePerPersonMeal(
-                              meal.key as Exclude<MealKey, "dinner">,
-                              p.key,
-                              d.dateOnly
-                            )
+                            savePerPersonMeal(meal.key as Exclude<MealKey, "dinner">, p.key, d.dateOnly)
                           }
                         />
 
@@ -390,20 +415,33 @@ export default function PlanGridClient(props: {
             </div>
           );
         })}
-
-        <datalist id="dinner-recipes-list">
-          {props.recipes.map((r) => (
-            <option key={r.id} value={r.name} />
-          ))}
-        </datalist>
-
-        <datalist id="meal-recipes-list">
-          <option value="Leftovers" />
-          {props.recipes.map((r) => (
-            <option key={r.id} value={r.name} />
-          ))}
-        </datalist>
       </div>
+
+      {/* DESKTOP datalists (shared with mobile) */}
+      <datalist id="dinner-recipes-list">
+        {recipesByTag.dinner.map((r) => (
+          <option key={r.id} value={r.name} />
+        ))}
+      </datalist>
+
+      <datalist id="breakfast-recipes-list">
+        {recipesByTag.breakfast.map((r) => (
+          <option key={r.id} value={r.name} />
+        ))}
+      </datalist>
+
+      <datalist id="lunch-recipes-list">
+        <option value="Leftovers" />
+        {recipesByTag.lunch.map((r) => (
+          <option key={r.id} value={r.name} />
+        ))}
+      </datalist>
+
+      <datalist id="snack-recipes-list">
+        {recipesByTag.snack.map((r) => (
+          <option key={r.id} value={r.name} />
+        ))}
+      </datalist>
     </>
   );
 }
