@@ -38,6 +38,21 @@ function normalise(s: string) {
   return (s ?? "").trim().toLowerCase();
 }
 
+function mapMealToDb(meal: Exclude<MealKey, "dinner">): "breakfast" | "lunch" | "snack" {
+  if (meal === "breakfast") return "breakfast";
+  if (meal === "lunch") return "lunch";
+  return "snack"; // snack1/snack2 both persist as "snack"
+}
+
+function buildNotes(
+  meal: Exclude<MealKey, "dinner">,
+  person: Exclude<PersonKey, "shared">
+): string {
+  // snacks need slot disambiguation; breakfast/lunch just store person
+  if (meal === "snack1" || meal === "snack2") return `${person}|${meal}`;
+  return person;
+}
+
 export default function PlanGridClient(props: {
   planWeekId: string;
   days: Day[];
@@ -136,19 +151,29 @@ export default function PlanGridClient(props: {
     }
   }
 
-  async function savePerPersonMeal(meal: Exclude<MealKey, "dinner">, person: Exclude<PersonKey, "shared">, dateOnly: string) {
+  async function savePerPersonMeal(
+    meal: Exclude<MealKey, "dinner">,
+    person: Exclude<PersonKey, "shared">,
+    dateOnly: string
+  ) {
     const k = `${meal}|${person}|${dateOnly}`;
     const recipeName = (nameByKey[k] ?? "").trim();
+
+    // Leftovers stays UI-only (do not persist / do not add to shopping list)
+    if (recipeName === "Leftovers") return;
+
+    const dbMeal = mapMealToDb(meal);
+    const notes = buildNotes(meal, person);
 
     setSavingKey(k);
     try {
       await setPlanEntryForDate({
         planWeekId: props.planWeekId,
         entryDate: dateOnly,
-        meal,
-        person,
+        meal: dbMeal,
+        notes,
         recipeName,
-      });
+      } as any);
     } catch (e: any) {
       alert(e?.message ?? `Failed to save ${meal}`);
     } finally {
@@ -200,15 +225,13 @@ export default function PlanGridClient(props: {
                     onFocus={(e) => e.currentTarget.select()}
                     onBlur={() => saveDinner(d.dateOnly)}
                   />
-                  <div className="text-xs text-gray-500">
-                    {savingKey === dinnerKey ? "Saving…" : ""}
-                  </div>
+                  <div className="text-xs text-gray-500">{savingKey === dinnerKey ? "Saving…" : ""}</div>
                   {dinnerVal && !recipeNames.has(dinnerVal) && (
                     <div className="text-xs text-amber-700">Not in recipes list</div>
                   )}
                 </div>
 
-                {/* Per-person meals (NOW persisted) */}
+                {/* Per-person meals (persisted; snacks enum-safe) */}
                 {MEALS.filter((m) => m.perPerson).map((meal) => (
                   <div key={meal.key} className="space-y-2">
                     <div className="text-sm font-medium">{meal.label}</div>
@@ -239,9 +262,7 @@ export default function PlanGridClient(props: {
                                 )
                               }
                             />
-                            <div className="text-xs text-gray-500">
-                              {savingKey === k ? "Saving…" : ""}
-                            </div>
+                            <div className="text-xs text-gray-500">{savingKey === k ? "Saving…" : ""}</div>
                             {val && val !== "Leftovers" && !recipeNames.has(val) && (
                               <div className="text-xs text-amber-700">Not in recipes list</div>
                             )}
@@ -301,15 +322,11 @@ export default function PlanGridClient(props: {
                         list="dinner-recipes-list"
                         value={val}
                         placeholder="Select recipe"
-                        onChange={(e) =>
-                          setNameByKey((prev) => ({ ...prev, [k]: e.target.value }))
-                        }
+                        onChange={(e) => setNameByKey((prev) => ({ ...prev, [k]: e.target.value }))}
                         onFocus={(e) => e.currentTarget.select()}
                         onBlur={() => saveDinner(d.dateOnly)}
                       />
-                      <div className="mt-1 text-xs text-gray-500">
-                        {savingKey === k ? "Saving…" : ""}
-                      </div>
+                      <div className="mt-1 text-xs text-gray-500">{savingKey === k ? "Saving…" : ""}</div>
                       {val && !recipeNames.has(val) && (
                         <div className="mt-1 text-xs text-amber-700">Not in recipes list</div>
                       )}
@@ -360,9 +377,7 @@ export default function PlanGridClient(props: {
                           }
                         />
 
-                        <div className="mt-1 text-xs text-gray-500">
-                          {savingKey === k ? "Saving…" : ""}
-                        </div>
+                        <div className="mt-1 text-xs text-gray-500">{savingKey === k ? "Saving…" : ""}</div>
 
                         {val && val !== "Leftovers" && !recipeNames.has(val) && (
                           <div className="mt-1 text-xs text-amber-700">Not in recipes list</div>

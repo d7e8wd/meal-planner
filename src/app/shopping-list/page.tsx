@@ -60,7 +60,7 @@ type ManualStateRow = {
   in_trolley: boolean | null;
 };
 
-const INCLUDED_MEALS = ["dinner", "breakfast", "lunch", "snack1", "snack2"] as const;
+const INCLUDED_MEALS = ["dinner", "breakfast", "lunch", "snack"] as const;
 
 export default async function ShoppingListPage() {
   const supabase = await createClient();
@@ -102,7 +102,7 @@ export default async function ShoppingListPage() {
     );
   }
 
-  // ✅ Include ALL meals in shopping aggregation
+  // ✅ Include ALL meals in shopping aggregation (enum-safe)
   const { data: entriesRaw, error: eErr } = await supabase
     .from("plan_entries")
     .select("meal, recipe_id, servings_override")

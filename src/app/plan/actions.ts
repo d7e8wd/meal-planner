@@ -3,8 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { startOfWeekMonday, toDateOnly } from "@/lib/week";
 
-type MealKey = "breakfast" | "lunch" | "dinner" | "snack1" | "snack2";
-type PersonKey = "charlie" | "lucy" | "shared";
+type DbMeal = "breakfast" | "lunch" | "dinner" | "snack";
 
 export async function clearPlanThisWeek() {
   const supabase = await createClient();
@@ -45,8 +44,9 @@ export async function clearPlanThisWeek() {
  * Generalised plan entry save.
  *
  * Persists:
- * - dinner (shared)
- * - breakfast/lunch/snack1/snack2 per-person using notes = "charlie" | "lucy"
+ * - dinner (shared) using meal="dinner" and notes ignored
+ * - breakfast/lunch using meal enum values and notes="charlie" | "lucy" (or any string key)
+ * - snacks using meal="snack" and notes to disambiguate slot, e.g. "charlie|snack1"
  *
  * Rules:
  * - recipeName empty => delete matching entry
@@ -55,14 +55,20 @@ export async function clearPlanThisWeek() {
 export async function setPlanEntryForDate(input: {
   planWeekId: string;
   entryDate: string; // YYYY-MM-DD
-  meal: MealKey;
-  person: PersonKey; // "shared" for dinner
+  meal: DbMeal;
   recipeName: string; // "" clears
+  notes?: string | null; // required for non-dinner entries
 }) {
   const supabase = await createClient();
 
   const recipeName = (input.recipeName ?? "").trim();
-  const isShared = input.person === "shared";
+  const isDinner = input.meal === "dinner";
+
+  // For non-dinner rows we require a notes key so entries don't collide
+  const notes = (input.notes ?? "").trim();
+  if (!isDinner && !notes) {
+    throw new Error(`notes is required for meal "${input.meal}"`);
+  }
 
   // Get household (for recipe lookup security)
   const { data: hmData, error: hmErr } = await supabase
@@ -76,8 +82,6 @@ export async function setPlanEntryForDate(input: {
   if (!householdId) throw new Error("No household found.");
 
   // Identify existing entry
-  // Dinner = match meal + date + plan_week_id (notes ignored)
-  // Other meals = match meal + date + plan_week_id + notes=person
   let sel = supabase
     .from("plan_entries")
     .select("id")
@@ -85,8 +89,8 @@ export async function setPlanEntryForDate(input: {
     .eq("entry_date", input.entryDate)
     .eq("meal", input.meal);
 
-  if (!isShared) {
-    sel = sel.eq("notes", input.person);
+  if (!isDinner) {
+    sel = sel.eq("notes", notes);
   }
 
   const { data: existingEntry, error: selErr } = await sel.maybeSingle();
@@ -117,8 +121,7 @@ export async function setPlanEntryForDate(input: {
       .from("plan_entries")
       .update({
         recipe_id: recipe.id,
-        // For non-shared meals we enforce notes=person; dinner we leave notes untouched.
-        ...(isShared ? {} : { notes: input.person }),
+        ...(isDinner ? {} : { notes }),
       })
       .eq("id", existingEntry.id);
 
@@ -134,7 +137,7 @@ export async function setPlanEntryForDate(input: {
     servings_override: null,
   };
 
-  if (!isShared) insertPayload.notes = input.person;
+  if (!isDinner) insertPayload.notes = notes;
 
   const { error: insErr } = await supabase.from("plan_entries").insert(insertPayload);
   if (insErr) throw new Error(insErr.message);
@@ -154,7 +157,6 @@ export async function setDinnerForDate(input: {
     planWeekId: input.planWeekId,
     entryDate: input.entryDate,
     meal: "dinner",
-    person: "shared",
     recipeName: input.recipeName,
   });
 }

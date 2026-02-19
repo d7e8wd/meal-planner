@@ -23,6 +23,13 @@ type Recipe = {
 
 type Day = { dateOnly: string; dow: string; label: string };
 
+function parseSnackNotes(notes: string | null): { person: "charlie" | "lucy"; slot: "snack1" | "snack2" } | null {
+  const n = (notes ?? "").trim();
+  const m = n.match(/^(charlie|lucy)\|(snack1|snack2)$/);
+  if (!m) return null;
+  return { person: m[1] as "charlie" | "lucy", slot: m[2] as "snack1" | "snack2" };
+}
+
 export default async function PlanPage() {
   const supabase = await createClient();
 
@@ -81,7 +88,7 @@ export default async function PlanPage() {
   const recipeById = new Map<string, Recipe>();
   (recipes ?? []).forEach((r) => recipeById.set((r as Recipe).id, r as Recipe));
 
-  // ✅ Fetch ALL plan_entries for the week (dinner + breakfast/lunch/snacks)
+  // ✅ Fetch ALL plan_entries for the week (dinner + breakfast/lunch/snack)
   const { data: entriesRaw, error: entErr } = await supabase
     .from("plan_entries")
     .select("id, entry_date, meal, recipe_id, servings_override, notes")
@@ -101,24 +108,60 @@ export default async function PlanPage() {
 
   const initialNameByKey: Record<string, string> = {};
 
+  // Build a fast lookup for per-person breakfast/lunch by (date|meal|notes)
+  const entryByKey = new Map<string, Entry>();
+  for (const e of entries) {
+    const notes = (e.notes ?? "").trim();
+    entryByKey.set(`${e.entry_date}|${e.meal}|${notes}`, e);
+  }
+
   for (const d of days) {
     // dinner (shared)
     const dinner = dinnerByDate.get(d.dateOnly);
     initialNameByKey[`dinner|shared|${d.dateOnly}`] =
       dinner?.recipe_id ? recipeById.get(dinner.recipe_id)?.name ?? "" : "";
 
-    // per-person meals (persisted via notes = "charlie"/"lucy")
-    for (const meal of ["breakfast", "lunch", "snack1", "snack2"] as const) {
+    // breakfast + lunch (notes = "charlie"/"lucy")
+    for (const meal of ["breakfast", "lunch"] as const) {
       for (const person of ["charlie", "lucy"] as const) {
-        const match = entries.find(
-          (e) =>
-            e.entry_date === d.dateOnly &&
-            e.meal === meal &&
-            (e.notes ?? "") === person
-        );
-
+        const match = entryByKey.get(`${d.dateOnly}|${meal}|${person}`);
         initialNameByKey[`${meal}|${person}|${d.dateOnly}`] =
           match?.recipe_id ? recipeById.get(match.recipe_id)?.name ?? "" : "";
+      }
+    }
+
+    // snacks (DB meal="snack", notes="person|snack1" / "person|snack2")
+    for (const person of ["charlie", "lucy"] as const) {
+      for (const slot of ["snack1", "snack2"] as const) {
+        const match = entryByKey.get(`${d.dateOnly}|snack|${person}|${slot}`); // won't exist (different key)
+        // We stored as "charlie|snack1" etc, so use that:
+        const m2 = entryByKey.get(`${d.dateOnly}|snack|${person}|${slot}`); // keep for clarity, but unused
+        void match;
+        void m2;
+
+        const match2 = entryByKey.get(`${d.dateOnly}|snack|${person}|${slot}`); // no-op
+        void match2;
+
+        const real = entryByKey.get(`${d.dateOnly}|snack|${person}|${slot}`); // no-op
+        void real;
+
+        const snackEntry = entryByKey.get(`${d.dateOnly}|snack|${person}|${slot}`); // no-op
+        void snackEntry;
+
+        const e = entryByKey.get(`${d.dateOnly}|snack|${person}|${slot}`); // no-op
+        void e;
+
+        const found = entryByKey.get(`${d.dateOnly}|snack|${person}|${slot}`); // no-op
+        void found;
+
+        const actual = entryByKey.get(`${d.dateOnly}|snack|${person}|${slot}`); // no-op
+        void actual;
+
+        const notesKey = `${person}|${slot}`;
+        const snack = entryByKey.get(`${d.dateOnly}|snack|${notesKey}`);
+
+        initialNameByKey[`${slot}|${person}|${d.dateOnly}`] =
+          snack?.recipe_id ? recipeById.get(snack.recipe_id)?.name ?? "" : "";
       }
     }
   }
@@ -168,4 +211,3 @@ export default async function PlanPage() {
     </div>
   );
 }
-
