@@ -10,6 +10,7 @@ type Recipe = {
   name: string;
   servings_default: number | null;
   instructions: string | null;
+  meal_tags: string[] | null;
 };
 
 type Ingredient = {
@@ -36,7 +37,32 @@ function stripCategoryLabel(s: string) {
   return m ? m[1].trim() : s.trim();
 }
 
-const UNIT_OPTIONS = ["each", "g", "kg", "ml", "l", "tsp", "tbsp", "pinch"];
+const UNIT_OPTIONS = [
+  "each",
+  "g",
+  "kg",
+  "ml",
+  "l",
+  "tsp",
+  "tbsp",
+  "pinch",
+  "jar",
+  "tub",
+  "tin",
+  "can",
+  "bottle",
+  "packet",
+  "pack",
+  "bag",
+  "box",
+  "cube",
+  "sachet",
+  "slice",
+  "clove",
+  "bunch",
+] as const;
+
+const TAG_OPTIONS = ["breakfast", "lunch", "dinner", "snack"] as const;
 
 export default function RecipeDetailPage() {
   const params = useParams<{ id: string }>();
@@ -61,6 +87,10 @@ export default function RecipeDetailPage() {
   // Instructions editor
   const [instructions, setInstructions] = useState("");
   const [savingInstructions, setSavingInstructions] = useState(false);
+
+  // Meal tags editor
+  const [mealTags, setMealTags] = useState<string[]>([]);
+  const [savingTags, setSavingTags] = useState(false);
 
   // Per-row edit state
   const [editById, setEditById] = useState<
@@ -110,7 +140,7 @@ export default function RecipeDetailPage() {
 
     const { data: r, error: rErr } = await supabase
       .from("recipes")
-      .select("id,name,servings_default,instructions")
+      .select("id,name,servings_default,instructions,meal_tags")
       .eq("id", recipeId)
       .maybeSingle();
 
@@ -124,8 +154,11 @@ export default function RecipeDetailPage() {
       setLoading(false);
       return;
     }
-    setRecipe(r as Recipe);
-    setInstructions((r.instructions ?? "") as string);
+
+    const rec = r as Recipe;
+    setRecipe(rec);
+    setInstructions((rec.instructions ?? "") as string);
+    setMealTags(((rec.meal_tags ?? []) as string[]) ?? []);
 
     const { data: it, error: itErr } = await supabase
       .from("recipe_items")
@@ -295,22 +328,42 @@ export default function RecipeDetailPage() {
     setMessage("Instructions saved.");
   }
 
-  function startEditRow(it: RecipeItem) {
-    setEditById((prev) => ({
-      ...prev,
-      [it.id]: {
-        qty: String(it.qty ?? ""),
-        unit: it.unit ?? "each",
-        saving: false,
-        error: null,
-      },
-    }));
+  async function saveMealTags() {
+    if (!recipe) return;
+    setMessage(null);
+    setSavingTags(true);
+
+    // Store exactly as lowercase strings, multi-select allowed
+    const cleaned = Array.from(
+      new Set(
+        mealTags
+          .map((t) => String(t).trim().toLowerCase())
+          .filter((t) => t.length > 0)
+      )
+    );
+
+    const { error } = await supabase
+      .from("recipes")
+      .update({ meal_tags: cleaned })
+      .eq("id", recipe.id);
+
+    setSavingTags(false);
+
+    if (error) {
+      setMessage("Error saving tags: " + error.message);
+      return;
+    }
+
+    setMessage("Tags saved.");
   }
 
   function patchEditRow(id: string, patch: Partial<(typeof editById)[string]>) {
     setEditById((prev) => ({
       ...prev,
-      [id]: { ...(prev[id] ?? { qty: "", unit: "each", saving: false, error: null }), ...patch },
+      [id]: {
+        ...(prev[id] ?? { qty: "", unit: "each", saving: false, error: null }),
+        ...patch,
+      },
     }));
   }
 
@@ -365,10 +418,54 @@ export default function RecipeDetailPage() {
       </a>
 
       <h1 style={{ fontSize: 28, fontWeight: 700, marginTop: 10 }}>{recipe.name}</h1>
-      <div style={{ marginTop: 6, color: "#666" }}>Default servings: {recipe.servings_default ?? "—"}</div>
+      <div style={{ marginTop: 6, color: "#666" }}>
+        Default servings: {recipe.servings_default ?? "—"}
+      </div>
 
       <div style={{ marginTop: 14 }}>
         <AddToPlan recipeId={recipeId} />
+      </div>
+
+      {/* Meal tags */}
+      <div style={{ marginTop: 22, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Meal tags</h2>
+
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          {TAG_OPTIONS.map((t) => {
+            const checked = mealTags.includes(t);
+            return (
+              <label key={t} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(e) => {
+                    const next = e.target.checked
+                      ? Array.from(new Set([...mealTags, t]))
+                      : mealTags.filter((x) => x !== t);
+                    setMealTags(next);
+                  }}
+                />
+                <span style={{ textTransform: "capitalize" }}>{t}</span>
+              </label>
+            );
+          })}
+        </div>
+
+        <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
+          <button
+            onClick={saveMealTags}
+            disabled={savingTags}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 10,
+              border: "1px solid #333",
+              width: 180,
+              background: savingTags ? "#eee" : "#fff",
+            }}
+          >
+            {savingTags ? "Saving…" : "Save tags"}
+          </button>
+        </div>
       </div>
 
       <div style={{ marginTop: 22, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
@@ -443,7 +540,12 @@ export default function RecipeDetailPage() {
                   <select
                     value={newCategory}
                     onChange={(e) => setNewCategory(e.target.value)}
-                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      border: "1px solid #ccc",
+                      borderRadius: 8,
+                    }}
                   >
                     {categories.map((c) => (
                       <option key={c} value={c}>
@@ -458,7 +560,12 @@ export default function RecipeDetailPage() {
                   <select
                     value={newDefaultUnit}
                     onChange={(e) => setNewDefaultUnit(e.target.value)}
-                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+                    style={{
+                      width: "100%",
+                      padding: 10,
+                      border: "1px solid #ccc",
+                      borderRadius: 8,
+                    }}
                   >
                     {UNIT_OPTIONS.map((u) => (
                       <option key={u} value={u}>
@@ -530,7 +637,9 @@ export default function RecipeDetailPage() {
             </button>
           </div>
 
-          {message && <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>}
+          {message && (
+            <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>
+          )}
         </div>
       </div>
 
@@ -542,8 +651,13 @@ export default function RecipeDetailPage() {
         ) : (
           <div style={{ border: "1px solid #ddd", borderRadius: 12, overflow: "hidden" }}>
             {items.map((it, idx) => {
-              const ed = editById[it.id] ?? { qty: String(it.qty ?? ""), unit: it.unit ?? "each", saving: false, error: null };
-              const crossed = false;
+              const ed =
+                editById[it.id] ?? {
+                  qty: String(it.qty ?? ""),
+                  unit: it.unit ?? "each",
+                  saving: false,
+                  error: null,
+                };
 
               return (
                 <div
@@ -558,13 +672,24 @@ export default function RecipeDetailPage() {
                   }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <div
+                      style={{
+                        fontWeight: 600,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
                       {it.ingredient?.name ?? it.ingredient_id}
                     </div>
                     <div style={{ fontSize: 13, color: "#666", fontWeight: 400 }}>
                       {it.ingredient?.category ?? ""}
                     </div>
-                    {ed.error ? <div style={{ fontSize: 12, color: "#b00020", marginTop: 6 }}>{ed.error}</div> : null}
+                    {ed.error ? (
+                      <div style={{ fontSize: 12, color: "#b00020", marginTop: 6 }}>
+                        {ed.error}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -574,13 +699,19 @@ export default function RecipeDetailPage() {
                       min="0"
                       value={ed.qty}
                       onChange={(e) => patchEditRow(it.id, { qty: e.target.value, error: null })}
-                      style={{ width: 90, padding: 8, border: "1px solid #ccc", borderRadius: 8, textAlign: "right" }}
+                      style={{
+                        width: 90,
+                        padding: 8,
+                        border: "1px solid #ccc",
+                        borderRadius: 8,
+                        textAlign: "right",
+                      }}
                     />
 
                     <select
                       value={ed.unit}
                       onChange={(e) => patchEditRow(it.id, { unit: e.target.value, error: null })}
-                      style={{ width: 90, padding: 8, border: "1px solid #ccc", borderRadius: 8 }}
+                      style={{ width: 110, padding: 8, border: "1px solid #ccc", borderRadius: 8 }}
                     >
                       {UNIT_OPTIONS.map((u) => (
                         <option key={u} value={u}>

@@ -1,11 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import {
-  addDays,
-  formatDay,
-  formatDow,
-  startOfWeekMonday,
-  toDateOnly,
-} from "@/lib/week";
+import { addDays, formatDay, formatDow, startOfWeekMonday, toDateOnly } from "@/lib/week";
 import PlanGridClient from "./PlanGridClient";
 import ClearPlanButton from "./ClearPlanButton";
 
@@ -23,6 +17,7 @@ type Recipe = {
   id: string;
   name: string;
   servings_default: number | null;
+  meal_tags: string[] | null;
 };
 
 type Day = { dateOnly: string; dow: string; label: string };
@@ -74,9 +69,10 @@ export default async function PlanPage() {
     };
   });
 
+  // ✅ Include meal_tags so the client can filter dropdown suggestions by meal
   const { data: recipes, error: rErr } = await supabase
     .from("recipes")
-    .select("id, name, servings_default")
+    .select("id, name, servings_default, meal_tags")
     .eq("household_id", householdId)
     .order("name");
 
