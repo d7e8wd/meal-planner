@@ -3,6 +3,9 @@
 import { createClient } from "@/lib/supabase/server";
 import { startOfWeekMonday, toDateOnly } from "@/lib/week";
 
+type MealKey = "breakfast" | "lunch" | "dinner" | "snack1" | "snack2";
+type PersonKey = "charlie" | "lucy" | "shared";
+
 export async function clearPlanThisWeek() {
   const supabase = await createClient();
 
@@ -39,18 +42,27 @@ export async function clearPlanThisWeek() {
 }
 
 /**
- * Save dinner for a date in a given plan week.
- * - If recipeName is empty => delete dinner entry for that date.
- * - Else => find recipe_id by name (case-insensitive) within household, then upsert.
+ * Generalised plan entry save.
+ *
+ * Persists:
+ * - dinner (shared)
+ * - breakfast/lunch/snack1/snack2 per-person using notes = "charlie" | "lucy"
+ *
+ * Rules:
+ * - recipeName empty => delete matching entry
+ * - recipeName present => lookup recipe_id by name (case-insensitive) in household, then upsert
  */
-export async function setDinnerForDate(input: {
+export async function setPlanEntryForDate(input: {
   planWeekId: string;
   entryDate: string; // YYYY-MM-DD
-  recipeName: string; // can be "" to clear
+  meal: MealKey;
+  person: PersonKey; // "shared" for dinner
+  recipeName: string; // "" clears
 }) {
   const supabase = await createClient();
 
   const recipeName = (input.recipeName ?? "").trim();
+  const isShared = input.person === "shared";
 
   // Get household (for recipe lookup security)
   const { data: hmData, error: hmErr } = await supabase
@@ -59,28 +71,31 @@ export async function setDinnerForDate(input: {
     .limit(1);
 
   if (hmErr) throw new Error(hmErr.message);
+
   const householdId = hmData?.[0]?.household_id;
   if (!householdId) throw new Error("No household found.");
 
-  // Find existing dinner entry
-  const { data: existingEntry, error: selErr } = await supabase
+  // Identify existing entry
+  // Dinner = match meal + date + plan_week_id (notes ignored)
+  // Other meals = match meal + date + plan_week_id + notes=person
+  let sel = supabase
     .from("plan_entries")
     .select("id")
     .eq("plan_week_id", input.planWeekId)
     .eq("entry_date", input.entryDate)
-    .eq("meal", "dinner")
-    .maybeSingle();
+    .eq("meal", input.meal);
 
+  if (!isShared) {
+    sel = sel.eq("notes", input.person);
+  }
+
+  const { data: existingEntry, error: selErr } = await sel.maybeSingle();
   if (selErr) throw new Error(selErr.message);
 
   // Clear
   if (!recipeName) {
     if (existingEntry?.id) {
-      const { error: delErr } = await supabase
-        .from("plan_entries")
-        .delete()
-        .eq("id", existingEntry.id);
-
+      const { error: delErr } = await supabase.from("plan_entries").delete().eq("id", existingEntry.id);
       if (delErr) throw new Error(delErr.message);
     }
     return { ok: true, action: "cleared" as const };
@@ -100,21 +115,46 @@ export async function setDinnerForDate(input: {
   if (existingEntry?.id) {
     const { error: updErr } = await supabase
       .from("plan_entries")
-      .update({ recipe_id: recipe.id })
+      .update({
+        recipe_id: recipe.id,
+        // For non-shared meals we enforce notes=person; dinner we leave notes untouched.
+        ...(isShared ? {} : { notes: input.person }),
+      })
       .eq("id", existingEntry.id);
 
     if (updErr) throw new Error(updErr.message);
     return { ok: true, action: "updated" as const };
-  } else {
-    const { error: insErr } = await supabase.from("plan_entries").insert({
-      plan_week_id: input.planWeekId,
-      entry_date: input.entryDate,
-      meal: "dinner",
-      recipe_id: recipe.id,
-      servings_override: null,
-    });
-
-    if (insErr) throw new Error(insErr.message);
-    return { ok: true, action: "inserted" as const };
   }
+
+  const insertPayload: any = {
+    plan_week_id: input.planWeekId,
+    entry_date: input.entryDate,
+    meal: input.meal,
+    recipe_id: recipe.id,
+    servings_override: null,
+  };
+
+  if (!isShared) insertPayload.notes = input.person;
+
+  const { error: insErr } = await supabase.from("plan_entries").insert(insertPayload);
+  if (insErr) throw new Error(insErr.message);
+
+  return { ok: true, action: "inserted" as const };
+}
+
+/**
+ * Backwards-compatible dinner helper used by current UI.
+ */
+export async function setDinnerForDate(input: {
+  planWeekId: string;
+  entryDate: string;
+  recipeName: string;
+}) {
+  return setPlanEntryForDate({
+    planWeekId: input.planWeekId,
+    entryDate: input.entryDate,
+    meal: "dinner",
+    person: "shared",
+    recipeName: input.recipeName,
+  });
 }

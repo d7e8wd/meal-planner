@@ -27,7 +27,8 @@ type ManualRow = {
   in_trolley: boolean;
 };
 
-type DinnerRow = {
+type PlanRow = {
+  meal: string;
   recipe_id: string | null;
   servings_override: number | null;
 };
@@ -58,6 +59,8 @@ type ManualStateRow = {
   in_cupboard: boolean | null;
   in_trolley: boolean | null;
 };
+
+const INCLUDED_MEALS = ["dinner", "breakfast", "lunch", "snack1", "snack2"] as const;
 
 export default async function ShoppingListPage() {
   const supabase = await createClient();
@@ -94,26 +97,26 @@ export default async function ShoppingListPage() {
             Back to plan
           </Link>
         </div>
-        <div>No plan week found for {weekStart}. Add dinners first.</div>
+        <div>No plan week found for {weekStart}. Add meals first.</div>
       </div>
     );
   }
 
-  // dinner entries for the week (include servings_override for scaling)
-  const { data: dinnersRaw, error: dErr } = await supabase
+  // ✅ Include ALL meals in shopping aggregation
+  const { data: entriesRaw, error: eErr } = await supabase
     .from("plan_entries")
-    .select("recipe_id, servings_override")
+    .select("meal, recipe_id, servings_override")
     .eq("plan_week_id", pw.id)
-    .eq("meal", "dinner");
+    .in("meal", [...INCLUDED_MEALS]);
 
-  if (dErr) return <div className="p-6">{dErr.message}</div>;
+  if (eErr) return <div className="p-6">{eErr.message}</div>;
 
-  const dinners = (dinnersRaw ?? []) as DinnerRow[];
+  const entries = (entriesRaw ?? []) as PlanRow[];
 
-  const recipeIds = dinners.map((d) => d.recipe_id).filter(Boolean) as string[];
+  const recipeIds = entries.map((d) => d.recipe_id).filter(Boolean) as string[];
   const uniqueRecipeIds = Array.from(new Set(recipeIds));
 
-  // Fetch manual items for this week (independent of dinners)
+  // Fetch manual items for this week (independent of meals)
   const { data: manualItemsRaw, error: miErr } = await supabase
     .from("manual_shopping_items")
     .select("id, name, category, qty, unit, carry_forward")
@@ -141,7 +144,7 @@ export default async function ShoppingListPage() {
     });
   }
 
-  // If no dinners AND no manual items, show empty state
+  // If no meal-driven recipes AND no manual items, show empty state
   if (uniqueRecipeIds.length === 0 && manualItems.length === 0) {
     return (
       <div className="p-6 space-y-4">
@@ -151,12 +154,12 @@ export default async function ShoppingListPage() {
             Back to plan
           </Link>
         </div>
-        <div>No dinners selected yet for week starting {weekStart}, and no manual items added.</div>
+        <div>No meals selected yet for week starting {weekStart}, and no manual items added.</div>
       </div>
     );
   }
 
-  // --- Recipe-driven aggregation (only if we have dinners) ---
+  // --- Recipe-driven aggregation ---
   let ingredientRows: IngredientAggRow[] = [];
 
   if (uniqueRecipeIds.length > 0) {
@@ -176,10 +179,10 @@ export default async function ShoppingListPage() {
       servingsDefaultByRecipe.set(r.id, def > 0 ? def : 1);
     }
 
-    // Sum multipliers per recipe across dinners in the week:
-    // totalMultiplier(recipe) = Σ (overrideOrDefault / default)
+    // Sum multipliers per recipe across the included meals in the week:
+    // totalMultiplier(recipe) = Σ (overrideOrDefault / default) across all selected plan entries
     const recipeMultiplierSum = new Map<string, number>();
-    for (const d of dinners) {
+    for (const d of entries) {
       const recipeId = d.recipe_id;
       if (!recipeId) continue;
 
@@ -217,7 +220,7 @@ export default async function ShoppingListPage() {
       });
     }
 
-    // Aggregate by ingredient_id + unit (stable), but keep display name/category
+    // Aggregate by ingredient_id + unit
     const agg = new Map<string, Omit<IngredientAggRow, "kind">>();
 
     for (const it of items ?? []) {
@@ -253,7 +256,7 @@ export default async function ShoppingListPage() {
     ingredientRows = Array.from(agg.values()).map((r) => ({ kind: "ingredient", ...r }));
   }
 
-  // Manual rows (always included)
+  // Manual rows
   const manualRows: ManualRow[] = manualItems.map((m) => {
     const st = manualStateById.get(m.id);
     return {
@@ -270,6 +273,8 @@ export default async function ShoppingListPage() {
 
   const rows = [...ingredientRows, ...manualRows];
 
+  const dinnersCount = entries.filter((e) => e.meal === "dinner").length;
+
   return (
     <div className="space-y-4">
       <div className="px-6 pt-6">
@@ -280,7 +285,7 @@ export default async function ShoppingListPage() {
 
       <ShoppingListClient
         weekStart={weekStart}
-        dinnersCount={recipeIds.length}
+        dinnersCount={dinnersCount}
         planWeekId={pw.id}
         initialRows={rows}
       />

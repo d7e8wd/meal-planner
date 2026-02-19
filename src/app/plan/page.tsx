@@ -11,6 +11,7 @@ type Entry = {
   meal: string;
   recipe_id: string | null;
   servings_override: number | null;
+  notes: string | null;
 };
 
 type Recipe = {
@@ -69,7 +70,6 @@ export default async function PlanPage() {
     };
   });
 
-  // ✅ IMPORTANT: include meal_tags so the client can filter dropdown suggestions
   const { data: recipes, error: rErr } = await supabase
     .from("recipes")
     .select("id, name, servings_default, meal_tags")
@@ -81,27 +81,44 @@ export default async function PlanPage() {
   const recipeById = new Map<string, Recipe>();
   (recipes ?? []).forEach((r) => recipeById.set((r as Recipe).id, r as Recipe));
 
-  const { data: dinnerEntries, error: entErr } = await supabase
+  // ✅ Fetch ALL plan_entries for the week (dinner + breakfast/lunch/snacks)
+  const { data: entriesRaw, error: entErr } = await supabase
     .from("plan_entries")
-    .select("id, entry_date, meal, recipe_id, servings_override")
-    .eq("plan_week_id", planWeekId)
-    .eq("meal", "dinner");
+    .select("id, entry_date, meal, recipe_id, servings_override, notes")
+    .eq("plan_week_id", planWeekId);
 
   if (entErr) return <div className="p-6">{entErr.message}</div>;
 
+  const entries = (entriesRaw ?? []) as Entry[];
+
+  // Map dinner by date (shared)
   const dinnerByDate = new Map<string, Entry>();
-  (dinnerEntries ?? []).forEach((e) => dinnerByDate.set(e.entry_date, e as Entry));
+  for (const e of entries) {
+    if (e.meal === "dinner") {
+      dinnerByDate.set(e.entry_date, e);
+    }
+  }
 
   const initialNameByKey: Record<string, string> = {};
 
   for (const d of days) {
+    // dinner (shared)
     const dinner = dinnerByDate.get(d.dateOnly);
     initialNameByKey[`dinner|shared|${d.dateOnly}`] =
       dinner?.recipe_id ? recipeById.get(dinner.recipe_id)?.name ?? "" : "";
 
+    // per-person meals (persisted via notes = "charlie"/"lucy")
     for (const meal of ["breakfast", "lunch", "snack1", "snack2"] as const) {
       for (const person of ["charlie", "lucy"] as const) {
-        initialNameByKey[`${meal}|${person}|${d.dateOnly}`] = "";
+        const match = entries.find(
+          (e) =>
+            e.entry_date === d.dateOnly &&
+            e.meal === meal &&
+            (e.notes ?? "") === person
+        );
+
+        initialNameByKey[`${meal}|${person}|${d.dateOnly}`] =
+          match?.recipe_id ? recipeById.get(match.recipe_id)?.name ?? "" : "";
       }
     }
   }
@@ -151,3 +168,4 @@ export default async function PlanPage() {
     </div>
   );
 }
+

@@ -1,10 +1,16 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { setDinnerForDate } from "./actions";
+import { setDinnerForDate, setPlanEntryForDate } from "./actions";
 
 type Day = { dateOnly: string; dow: string; label: string };
-type Recipe = { id: string; name: string; servings_default: number | null };
+
+type Recipe = {
+  id: string;
+  name: string;
+  servings_default: number | null;
+  meal_tags: string[] | null;
+};
 
 type MealKey = "breakfast" | "lunch" | "dinner" | "snack1" | "snack2";
 type PersonKey = "charlie" | "lucy" | "shared";
@@ -63,8 +69,6 @@ export default function PlanGridClient(props: {
 
   const [nameByKey, setNameByKey] = useState<Record<string, string>>(init.next);
   const [savingKey, setSavingKey] = useState<string | null>(null);
-
-  // We keep autofilled keys in state so we can add to it after dinner saves
   const [autofilledKeys, setAutofilledKeys] = useState<Set<string>>(init.auto);
 
   const recipeNames = useMemo(() => new Set(props.recipes.map((r) => r.name)), [props.recipes]);
@@ -93,7 +97,7 @@ export default function PlanGridClient(props: {
         recipeName,
       });
 
-      // ✅ After saving dinner from the grid, auto-fill NEXT DAY lunch (UI-only) if servings > 2
+      // After saving dinner, auto-fill NEXT DAY lunch (UI-only) if servings > 2
       const idx = dayIndexByDate.get(dateOnly);
       if (idx !== undefined) {
         const nextDay = props.days[idx + 1];
@@ -132,9 +136,28 @@ export default function PlanGridClient(props: {
     }
   }
 
+  async function savePerPersonMeal(meal: Exclude<MealKey, "dinner">, person: Exclude<PersonKey, "shared">, dateOnly: string) {
+    const k = `${meal}|${person}|${dateOnly}`;
+    const recipeName = (nameByKey[k] ?? "").trim();
+
+    setSavingKey(k);
+    try {
+      await setPlanEntryForDate({
+        planWeekId: props.planWeekId,
+        entryDate: dateOnly,
+        meal,
+        person,
+        recipeName,
+      });
+    } catch (e: any) {
+      alert(e?.message ?? `Failed to save ${meal}`);
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
   function handlePerPersonChange(key: string, nextVal: string) {
     setNameByKey((prev) => ({ ...prev, [key]: nextVal }));
-    // if user edits an autofilled cell, it becomes manual (green)
     if (autofilledKeys.has(key)) {
       setAutofilledKeys((old) => {
         const n = new Set(old);
@@ -146,9 +169,7 @@ export default function PlanGridClient(props: {
 
   return (
     <>
-      {/* =========================
-          MOBILE LAYOUT (cards)
-          ========================= */}
+      {/* MOBILE */}
       <div className="block md:hidden space-y-4">
         {props.days.map((d) => {
           const dinnerKey = `dinner|shared|${d.dateOnly}`;
@@ -187,7 +208,7 @@ export default function PlanGridClient(props: {
                   )}
                 </div>
 
-                {/* Per-person meals (UI-only) */}
+                {/* Per-person meals (NOW persisted) */}
                 {MEALS.filter((m) => m.perPerson).map((meal) => (
                   <div key={meal.key} className="space-y-2">
                     <div className="text-sm font-medium">{meal.label}</div>
@@ -210,7 +231,17 @@ export default function PlanGridClient(props: {
                               placeholder="Select"
                               onChange={(e) => handlePerPersonChange(k, e.target.value)}
                               onFocus={(e) => e.currentTarget.select()}
+                              onBlur={() =>
+                                savePerPersonMeal(
+                                  meal.key as Exclude<MealKey, "dinner">,
+                                  p.key,
+                                  d.dateOnly
+                                )
+                              }
                             />
+                            <div className="text-xs text-gray-500">
+                              {savingKey === k ? "Saving…" : ""}
+                            </div>
                             {val && val !== "Leftovers" && !recipeNames.has(val) && (
                               <div className="text-xs text-amber-700">Not in recipes list</div>
                             )}
@@ -225,7 +256,6 @@ export default function PlanGridClient(props: {
           );
         })}
 
-        {/* Lists (same as desktop) */}
         <datalist id="dinner-recipes-list">
           {props.recipes.map((r) => (
             <option key={r.id} value={r.name} />
@@ -240,11 +270,8 @@ export default function PlanGridClient(props: {
         </datalist>
       </div>
 
-      {/* =========================
-          DESKTOP LAYOUT (your existing grid)
-          ========================= */}
+      {/* DESKTOP */}
       <div className="hidden md:block rounded-lg border overflow-hidden">
-        {/* Header */}
         <div className="grid grid-cols-8 bg-gray-50 border-b">
           <div className="p-3 text-sm font-medium">Meal</div>
           {props.days.map((d) => (
@@ -257,7 +284,6 @@ export default function PlanGridClient(props: {
 
         {MEALS.map((meal) => {
           if (!meal.perPerson) {
-            // Dinner (persisted)
             return (
               <div key={meal.key} className="grid grid-cols-8 border-b last:border-b-0">
                 <div className="p-3 text-sm font-medium border-r">{meal.label}</div>
@@ -294,7 +320,6 @@ export default function PlanGridClient(props: {
             );
           }
 
-          // Per-person meals (UI-only, includes manual “Leftovers” option)
           return (
             <div key={meal.key} className="border-b last:border-b-0">
               {PEOPLE.map((p, idx) => (
@@ -326,7 +351,18 @@ export default function PlanGridClient(props: {
                           placeholder="Select"
                           onChange={(e) => handlePerPersonChange(k, e.target.value)}
                           onFocus={(e) => e.currentTarget.select()}
+                          onBlur={() =>
+                            savePerPersonMeal(
+                              meal.key as Exclude<MealKey, "dinner">,
+                              p.key,
+                              d.dateOnly
+                            )
+                          }
                         />
+
+                        <div className="mt-1 text-xs text-gray-500">
+                          {savingKey === k ? "Saving…" : ""}
+                        </div>
 
                         {val && val !== "Leftovers" && !recipeNames.has(val) && (
                           <div className="mt-1 text-xs text-amber-700">Not in recipes list</div>
@@ -340,14 +376,12 @@ export default function PlanGridClient(props: {
           );
         })}
 
-        {/* Dinner list = real recipes only (so saving doesn’t error) */}
         <datalist id="dinner-recipes-list">
           {props.recipes.map((r) => (
             <option key={r.id} value={r.name} />
           ))}
         </datalist>
 
-        {/* Other meals list = real recipes + manual “Leftovers” */}
         <datalist id="meal-recipes-list">
           <option value="Leftovers" />
           {props.recipes.map((r) => (
