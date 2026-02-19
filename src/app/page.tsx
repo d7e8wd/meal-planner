@@ -1,44 +1,12 @@
-import Link from "next/link";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
 
-export default function HomePage() {
-  return (
-    <div
-      style={{
-        padding: 40,
-        maxWidth: 600,
-        margin: "0 auto",
-        textAlign: "center",
-      }}
-    >
-      <h1 style={{ fontSize: 32, marginBottom: 20 }}>
-        Meal Planner
-      </h1>
+export const dynamic = "force-dynamic";
 
-      <p style={{ marginBottom: 30 }}>
-        Plan your week, generate a shopping list, and stay organised.
-      </p>
+export default async function HomePage() {
+  const supabase = await createClient();
+  const { data } = await supabase.auth.getUser();
 
-      <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-        <Link href="/plan">
-          <button style={buttonStyle}>Go to Plan</button>
-        </Link>
-
-        <Link href="/recipes">
-          <button style={buttonStyle}>View Recipes</button>
-        </Link>
-
-        <Link href="/shopping-list">
-          <button style={buttonStyle}>Shopping List</button>
-        </Link>
-      </div>
-    </div>
-  );
+  if (data.user) redirect("/plan");
+  redirect("/login");
 }
-
-const buttonStyle: React.CSSProperties = {
-  padding: "10px 16px",
-  borderRadius: 8,
-  border: "1px solid #ccc",
-  background: "#fff",
-  cursor: "pointer",
-};
