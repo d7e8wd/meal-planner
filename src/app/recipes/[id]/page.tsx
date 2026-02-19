@@ -36,6 +36,8 @@ function stripCategoryLabel(s: string) {
   return m ? m[1].trim() : s.trim();
 }
 
+const UNIT_OPTIONS = ["each", "g", "kg", "ml", "l", "tsp", "tbsp", "pinch"];
+
 export default function RecipeDetailPage() {
   const params = useParams<{ id: string }>();
   const recipeId = params.id;
@@ -59,6 +61,19 @@ export default function RecipeDetailPage() {
   // Instructions editor
   const [instructions, setInstructions] = useState("");
   const [savingInstructions, setSavingInstructions] = useState(false);
+
+  // Per-row edit state
+  const [editById, setEditById] = useState<
+    Record<
+      string,
+      {
+        qty: string;
+        unit: string;
+        saving: boolean;
+        error: string | null;
+      }
+    >
+  >({});
 
   const ingredientByLabel = useMemo(() => {
     const map = new Map<string, Ingredient>();
@@ -124,7 +139,6 @@ export default function RecipeDetailPage() {
       return;
     }
 
-    // ✅ Fix for production TS build:
     // Supabase join can return ingredient as an array; normalise to a single object.
     const normalisedItems: RecipeItem[] = (it ?? []).map((row: any) => ({
       id: row.id,
@@ -148,6 +162,26 @@ export default function RecipeDetailPage() {
       return;
     }
     setIngredients((ing ?? []) as Ingredient[]);
+
+    // Initialise edit state for current rows (don’t clobber existing edits)
+    setEditById((prev) => {
+      const next = { ...prev };
+      for (const row of normalisedItems) {
+        if (!next[row.id]) {
+          next[row.id] = {
+            qty: String(row.qty ?? ""),
+            unit: row.unit ?? "each",
+            saving: false,
+            error: null,
+          };
+        }
+      }
+      // Remove edits for rows that no longer exist
+      for (const key of Object.keys(next)) {
+        if (!normalisedItems.some((x) => x.id === key)) delete next[key];
+      }
+      return next;
+    });
 
     setLoading(false);
   }
@@ -261,6 +295,66 @@ export default function RecipeDetailPage() {
     setMessage("Instructions saved.");
   }
 
+  function startEditRow(it: RecipeItem) {
+    setEditById((prev) => ({
+      ...prev,
+      [it.id]: {
+        qty: String(it.qty ?? ""),
+        unit: it.unit ?? "each",
+        saving: false,
+        error: null,
+      },
+    }));
+  }
+
+  function patchEditRow(id: string, patch: Partial<(typeof editById)[string]>) {
+    setEditById((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] ?? { qty: "", unit: "each", saving: false, error: null }), ...patch },
+    }));
+  }
+
+  async function saveRow(it: RecipeItem) {
+    const ed = editById[it.id];
+    if (!ed) return;
+
+    const qtyNum = Number(ed.qty);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+      patchEditRow(it.id, { error: "Qty must be a number > 0" });
+      return;
+    }
+
+    patchEditRow(it.id, { saving: true, error: null });
+
+    const { error } = await supabase
+      .from("recipe_items")
+      .update({ qty: qtyNum, unit: ed.unit ?? "each" })
+      .eq("id", it.id);
+
+    patchEditRow(it.id, { saving: false });
+
+    if (error) {
+      patchEditRow(it.id, { error: error.message });
+      return;
+    }
+
+    await loadAll();
+  }
+
+  async function deleteRow(it: RecipeItem) {
+    const ok = confirm(`Remove "${it.ingredient?.name ?? "this item"}" from the recipe?`);
+    if (!ok) return;
+
+    const { error } = await supabase.from("recipe_items").delete().eq("id", it.id);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    await loadAll();
+  }
+
   if (loading) return <div style={{ padding: 40 }}>Loading…</div>;
   if (!recipe) return <div style={{ padding: 40 }}>Recipe not found.</div>;
 
@@ -271,11 +365,8 @@ export default function RecipeDetailPage() {
       </a>
 
       <h1 style={{ fontSize: 28, fontWeight: 700, marginTop: 10 }}>{recipe.name}</h1>
-      <div style={{ marginTop: 6, color: "#666" }}>
-        Default servings: {recipe.servings_default ?? "—"}
-      </div>
+      <div style={{ marginTop: 6, color: "#666" }}>Default servings: {recipe.servings_default ?? "—"}</div>
 
-      {/* ✅ NEW: Add to plan */}
       <div style={{ marginTop: 14 }}>
         <AddToPlan recipeId={recipeId} />
       </div>
@@ -352,12 +443,7 @@ export default function RecipeDetailPage() {
                   <select
                     value={newCategory}
                     onChange={(e) => setNewCategory(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: 10,
-                      border: "1px solid #ccc",
-                      borderRadius: 8,
-                    }}
+                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
                   >
                     {categories.map((c) => (
                       <option key={c} value={c}>
@@ -372,21 +458,13 @@ export default function RecipeDetailPage() {
                   <select
                     value={newDefaultUnit}
                     onChange={(e) => setNewDefaultUnit(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: 10,
-                      border: "1px solid #ccc",
-                      borderRadius: 8,
-                    }}
+                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
                   >
-                    <option value="each">each</option>
-                    <option value="g">g</option>
-                    <option value="kg">kg</option>
-                    <option value="ml">ml</option>
-                    <option value="l">l</option>
-                    <option value="tsp">tsp</option>
-                    <option value="tbsp">tbsp</option>
-                    <option value="pinch">pinch</option>
+                    {UNIT_OPTIONS.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
                   </select>
                 </label>
 
@@ -429,14 +507,11 @@ export default function RecipeDetailPage() {
                 onChange={(e) => setUnit(e.target.value)}
                 style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
               >
-                <option value="each">each</option>
-                <option value="g">g</option>
-                <option value="kg">kg</option>
-                <option value="ml">ml</option>
-                <option value="l">l</option>
-                <option value="tsp">tsp</option>
-                <option value="tbsp">tbsp</option>
-                <option value="pinch">pinch</option>
+                {UNIT_OPTIONS.map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
               </select>
             </label>
 
@@ -455,9 +530,7 @@ export default function RecipeDetailPage() {
             </button>
           </div>
 
-          {message && (
-            <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>
-          )}
+          {message && <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>}
         </div>
       </div>
 
@@ -468,28 +541,85 @@ export default function RecipeDetailPage() {
           <p>No ingredient lines yet.</p>
         ) : (
           <div style={{ border: "1px solid #ddd", borderRadius: 12, overflow: "hidden" }}>
-            {items.map((it) => (
-              <div
-                key={it.id}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  padding: 12,
-                  borderTop: "1px solid #eee",
-                }}
-              >
-                <div style={{ flex: 1, fontWeight: 600 }}>
-                  {it.ingredient?.name ?? it.ingredient_id}
-                  <div style={{ fontSize: 13, color: "#666", fontWeight: 400 }}>
-                    {it.ingredient?.category ?? ""}
+            {items.map((it, idx) => {
+              const ed = editById[it.id] ?? { qty: String(it.qty ?? ""), unit: it.unit ?? "each", saving: false, error: null };
+              const crossed = false;
+
+              return (
+                <div
+                  key={it.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    padding: 12,
+                    borderTop: idx === 0 ? "none" : "1px solid #eee",
+                    alignItems: "center",
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {it.ingredient?.name ?? it.ingredient_id}
+                    </div>
+                    <div style={{ fontSize: 13, color: "#666", fontWeight: 400 }}>
+                      {it.ingredient?.category ?? ""}
+                    </div>
+                    {ed.error ? <div style={{ fontSize: 12, color: "#b00020", marginTop: 6 }}>{ed.error}</div> : null}
+                  </div>
+
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      value={ed.qty}
+                      onChange={(e) => patchEditRow(it.id, { qty: e.target.value, error: null })}
+                      style={{ width: 90, padding: 8, border: "1px solid #ccc", borderRadius: 8, textAlign: "right" }}
+                    />
+
+                    <select
+                      value={ed.unit}
+                      onChange={(e) => patchEditRow(it.id, { unit: e.target.value, error: null })}
+                      style={{ width: 90, padding: 8, border: "1px solid #ccc", borderRadius: 8 }}
+                    >
+                      {UNIT_OPTIONS.map((u) => (
+                        <option key={u} value={u}>
+                          {u}
+                        </option>
+                      ))}
+                    </select>
+
+                    <button
+                      onClick={() => saveRow(it)}
+                      disabled={ed.saving}
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid #333",
+                        background: ed.saving ? "#eee" : "#fff",
+                        minWidth: 70,
+                      }}
+                    >
+                      {ed.saving ? "Saving…" : "Save"}
+                    </button>
+
+                    <button
+                      onClick={() => deleteRow(it)}
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid #ccc",
+                        background: "#fff",
+                        color: "#666",
+                      }}
+                      title="Remove this line"
+                    >
+                      Delete
+                    </button>
                   </div>
                 </div>
-                <div style={{ width: 140, textAlign: "right", color: "#333" }}>
-                  {it.qty} {it.unit}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
