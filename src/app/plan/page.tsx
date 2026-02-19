@@ -69,7 +69,7 @@ export default async function PlanPage() {
     };
   });
 
-  // ✅ Include meal_tags so the client can filter dropdown suggestions by meal
+  // ✅ IMPORTANT: include meal_tags so the client can filter dropdown suggestions
   const { data: recipes, error: rErr } = await supabase
     .from("recipes")
     .select("id, name, servings_default, meal_tags")
