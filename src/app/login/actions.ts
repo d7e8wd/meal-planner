@@ -40,7 +40,7 @@ export async function signIn(formData: FormData): Promise<void> {
     redirect("/login?error=" + encodeURIComponent(error.message));
   }
 
-  redirect("/plan");
+  redirect("/");
 }
 
 export async function signOut(): Promise<void> {
