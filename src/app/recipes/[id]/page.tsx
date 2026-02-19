@@ -105,6 +105,16 @@ export default function RecipeDetailPage() {
     >
   >({});
 
+  // simple mobile detection for layout tweaks
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const apply = () => setIsMobile(mq.matches);
+    apply();
+    mq.addEventListener?.("change", apply);
+    return () => mq.removeEventListener?.("change", apply);
+  }, []);
+
   const ingredientByLabel = useMemo(() => {
     const map = new Map<string, Ingredient>();
     for (const i of ingredients) {
@@ -335,17 +345,10 @@ export default function RecipeDetailPage() {
 
     // Store exactly as lowercase strings, multi-select allowed
     const cleaned = Array.from(
-      new Set(
-        mealTags
-          .map((t) => String(t).trim().toLowerCase())
-          .filter((t) => t.length > 0)
-      )
+      new Set(mealTags.map((t) => String(t).trim().toLowerCase()).filter((t) => t.length > 0))
     );
 
-    const { error } = await supabase
-      .from("recipes")
-      .update({ meal_tags: cleaned })
-      .eq("id", recipe.id);
+    const { error } = await supabase.from("recipes").update({ meal_tags: cleaned }).eq("id", recipe.id);
 
     setSavingTags(false);
 
@@ -418,9 +421,7 @@ export default function RecipeDetailPage() {
       </a>
 
       <h1 style={{ fontSize: 28, fontWeight: 700, marginTop: 10 }}>{recipe.name}</h1>
-      <div style={{ marginTop: 6, color: "#666" }}>
-        Default servings: {recipe.servings_default ?? "—"}
-      </div>
+      <div style={{ marginTop: 6, color: "#666" }}>Default servings: {recipe.servings_default ?? "—"}</div>
 
       <div style={{ marginTop: 14 }}>
         <AddToPlan recipeId={recipeId} />
@@ -637,9 +638,7 @@ export default function RecipeDetailPage() {
             </button>
           </div>
 
-          {message && (
-            <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>
-          )}
+          {message && <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>}
         </div>
       </div>
 
@@ -664,11 +663,12 @@ export default function RecipeDetailPage() {
                   key={it.id}
                   style={{
                     display: "flex",
+                    flexDirection: isMobile ? "column" : "row",
                     justifyContent: "space-between",
-                    gap: 12,
+                    gap: isMobile ? 10 : 12,
                     padding: 12,
                     borderTop: idx === 0 ? "none" : "1px solid #eee",
-                    alignItems: "center",
+                    alignItems: isMobile ? "stretch" : "center",
                   }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -686,13 +686,19 @@ export default function RecipeDetailPage() {
                       {it.ingredient?.category ?? ""}
                     </div>
                     {ed.error ? (
-                      <div style={{ fontSize: 12, color: "#b00020", marginTop: 6 }}>
-                        {ed.error}
-                      </div>
+                      <div style={{ fontSize: 12, color: "#b00020", marginTop: 6 }}>{ed.error}</div>
                     ) : null}
                   </div>
 
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      justifyContent: isMobile ? "flex-start" : "flex-end",
+                    }}
+                  >
                     <input
                       type="number"
                       step="0.1"
@@ -700,7 +706,8 @@ export default function RecipeDetailPage() {
                       value={ed.qty}
                       onChange={(e) => patchEditRow(it.id, { qty: e.target.value, error: null })}
                       style={{
-                        width: 90,
+                        width: isMobile ? "48%" : 90,
+                        minWidth: isMobile ? 120 : 90,
                         padding: 8,
                         border: "1px solid #ccc",
                         borderRadius: 8,
@@ -711,7 +718,13 @@ export default function RecipeDetailPage() {
                     <select
                       value={ed.unit}
                       onChange={(e) => patchEditRow(it.id, { unit: e.target.value, error: null })}
-                      style={{ width: 110, padding: 8, border: "1px solid #ccc", borderRadius: 8 }}
+                      style={{
+                        width: isMobile ? "48%" : 110,
+                        minWidth: isMobile ? 140 : 110,
+                        padding: 8,
+                        border: "1px solid #ccc",
+                        borderRadius: 8,
+                      }}
                     >
                       {UNIT_OPTIONS.map((u) => (
                         <option key={u} value={u}>
@@ -728,7 +741,7 @@ export default function RecipeDetailPage() {
                         borderRadius: 10,
                         border: "1px solid #333",
                         background: ed.saving ? "#eee" : "#fff",
-                        minWidth: 70,
+                        minWidth: isMobile ? "48%" : 70,
                       }}
                     >
                       {ed.saving ? "Saving…" : "Save"}
@@ -742,6 +755,7 @@ export default function RecipeDetailPage() {
                         border: "1px solid #ccc",
                         background: "#fff",
                         color: "#666",
+                        minWidth: isMobile ? "48%" : undefined,
                       }}
                       title="Remove this line"
                     >
