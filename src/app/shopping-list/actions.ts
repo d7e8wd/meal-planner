@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { revalidatePath } from "next/cache";
 
 export async function setShoppingState(params: {
   planWeekId: string;
@@ -31,3 +32,20 @@ export async function setShoppingState(params: {
     throw new Error(error.message);
   }
 }
+
+export async function resetShoppingListState(params: { planWeekId: string }) {
+  const supabase = await createClient();
+
+  const { error } = await supabase
+    .from("shopping_list_state")
+    .delete()
+    .eq("plan_week_id", params.planWeekId);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  // Ensure any server-rendered shopping list data is re-fetched
+  revalidatePath("/shopping-list");
+}
+

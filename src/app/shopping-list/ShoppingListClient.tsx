@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { setShoppingState } from "./actions";
+import { resetShoppingListState, setShoppingState } from "./actions";
 
 type Row = {
   ingredient_id: string;
@@ -151,9 +151,28 @@ export default function ShoppingListClient(props: {
     });
   }
 
+  function onReset() {
+    const ok = confirm(
+      "Reset shopping list?\n\nThis will clear all 'in trolley' and 'in cupboard' ticks for this week, and rebuild the list from the current plan."
+    );
+    if (!ok) return;
+
+    startTransition(async () => {
+      try {
+        await resetShoppingListState({ planWeekId: props.planWeekId });
+
+        // Force a full reload so the shopping list is re-aggregated fresh from the current plan.
+        // (router.refresh() won't reliably replace this component's local state.)
+        window.location.reload();
+      } catch (e: any) {
+        alert(e?.message ?? "Failed to reset shopping list");
+      }
+    });
+  }
+
   return (
     <div className="p-6 space-y-4">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-3">
         <h1 className="text-2xl font-semibold">Shopping List</h1>
         <div className="text-sm text-gray-500">
           Week starting {props.weekStart} • Dinners: {props.dinnersCount}
@@ -195,9 +214,15 @@ export default function ShoppingListClient(props: {
 
         <button
           type="button"
-          onClick={() => window.print()}
-          className="ml-auto text-sm underline"
+          onClick={onReset}
+          disabled={isPending}
+          className="ml-auto text-sm underline disabled:opacity-50"
+          title="Clears all ticks for this week and rebuilds from the current plan"
         >
+          Reset Shopping List
+        </button>
+
+        <button type="button" onClick={() => window.print()} className="text-sm underline">
           Print
         </button>
       </div>
@@ -208,15 +233,16 @@ export default function ShoppingListClient(props: {
         <div className="space-y-6">
           {grouped.map((g) => (
             <div key={g.section} className="rounded border overflow-hidden">
-              <div className="bg-gray-50 border-b px-3 py-2 text-sm font-medium">
-                {g.section}
-              </div>
+              <div className="bg-gray-50 border-b px-3 py-2 text-sm font-medium">{g.section}</div>
 
               <div className="divide-y">
                 {g.items.map((r) => {
                   const crossed = mode === "shop" && r.in_trolley;
                   return (
-                    <div key={`${r.ingredient_id}||${r.unit}`} className="flex items-start gap-3 p-3">
+                    <div
+                      key={`${r.ingredient_id}||${r.unit}`}
+                      className="flex items-start gap-3 p-3"
+                    >
                       {/* Trolley checkbox */}
                       <div className="pt-1">
                         <input
@@ -228,12 +254,13 @@ export default function ShoppingListClient(props: {
                       </div>
 
                       <div className="min-w-0 flex-1">
-                        <div className={`font-medium ${crossed ? "line-through text-gray-400" : ""}`}>
+                        <div
+                          className={`font-medium ${crossed ? "line-through text-gray-400" : ""}`}
+                        >
                           {r.ingredient_name}
                         </div>
                         <div className={`text-xs ${crossed ? "text-gray-300" : "text-gray-500"}`}>
                           {formatQty(r.total_qty)} {r.unit}
-                          {r.unit ? "" : ""}
                         </div>
                       </div>
 
