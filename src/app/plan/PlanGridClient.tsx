@@ -52,15 +52,21 @@ function mealTagForUiKey(meal: MealKey): "breakfast" | "lunch" | "dinner" | "sna
 }
 
 function hasTag(recipe: Recipe, tag: "breakfast" | "lunch" | "dinner" | "snack") {
-  const tags = (recipe.meal_tags ?? []).map((t) => String(t).toLowerCase());
+  const tags = (recipe.meal_tags ?? []).map((t) => String(t).toLowerCase().trim());
   return tags.includes(tag);
 }
 
 function notesFor(meal: Exclude<MealKey, "dinner">, person: Exclude<PersonKey, "shared">): string {
-  // breakfast/lunch: notes = "charlie" / "lucy"
-  // snack1/snack2: notes = "charlie|snack1" etc
+  // breakfast/lunch: "charlie" / "lucy"
+  // snack1/snack2: "charlie|snack1" etc
   if (meal === "snack1" || meal === "snack2") return `${person}|${meal}`;
   return person;
+}
+
+function recipeListForTag(recipes: Recipe[], tag: "breakfast" | "lunch" | "dinner" | "snack") {
+  const tagged = recipes.filter((r) => hasTag(r, tag));
+  // If nothing is tagged yet, fall back to all recipes (better than an empty list)
+  return tagged.length > 0 ? tagged : recipes;
 }
 
 export default function PlanGridClient(props: {
@@ -110,39 +116,58 @@ export default function PlanGridClient(props: {
     return m;
   }, [props.days]);
 
-  // ----- Mobile picker modal state -----
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerKey, setPickerKey] = useState<string>("");
-  const [pickerMeal, setPickerMeal] = useState<MealKey>("dinner");
-  const [pickerPerson, setPickerPerson] = useState<PersonKey>("shared");
-  const [pickerDate, setPickerDate] = useState<string>("");
-  const [pickerQuery, setPickerQuery] = useState<string>("");
+  // Precomputed filtered lists for desktop datalists
+  const recipesDinner = useMemo(() => recipeListForTag(props.recipes, "dinner"), [props.recipes]);
+  const recipesBreakfast = useMemo(
+    () => recipeListForTag(props.recipes, "breakfast"),
+    [props.recipes]
+  );
+  const recipesLunch = useMemo(() => recipeListForTag(props.recipes, "lunch"), [props.recipes]);
+  const recipesSnack = useMemo(() => recipeListForTag(props.recipes, "snack"), [props.recipes]);
 
-  const pickerTag = useMemo(() => mealTagForUiKey(pickerMeal), [pickerMeal]);
+  // --- Compact mobile picker state (inline under the active field) ---
+  const [mobilePickerKey, setMobilePickerKey] = useState<string | null>(null);
+  const [mobilePickerQuery, setMobilePickerQuery] = useState<string>("");
 
-  const pickerOptions = useMemo(() => {
-    const q = normalise(pickerQuery);
+  const mobilePickerMeta = useMemo(() => {
+    if (!mobilePickerKey) return null;
+    // key format is always `${meal}|${person}|${dateOnly}`
+    const parts = mobilePickerKey.split("|");
+    if (parts.length !== 3) return null;
+    const meal = parts[0] as MealKey;
+    const person = parts[1] as PersonKey;
+    const dateOnly = parts[2] as string;
+    return { meal, person, dateOnly };
+  }, [mobilePickerKey]);
 
-    const tagged = props.recipes.filter((r) => hasTag(r, pickerTag));
-    const base = tagged.length > 0 ? tagged : props.recipes;
-
+  const mobilePickerOptions = useMemo(() => {
+    if (!mobilePickerMeta) return [];
+    const tag = mealTagForUiKey(mobilePickerMeta.meal);
+    const base = recipeListForTag(props.recipes, tag);
+    const q = normalise(mobilePickerQuery);
     const filtered = q ? base.filter((r) => normalise(r.name).includes(q)) : base;
-    return filtered.slice(0, 40);
-  }, [props.recipes, pickerQuery, pickerTag]);
+    return filtered.slice(0, 30);
+  }, [props.recipes, mobilePickerMeta, mobilePickerQuery]);
 
-  function openPicker(opts: { key: string; meal: MealKey; person: PersonKey; dateOnly: string }) {
-    setPickerKey(opts.key);
-    setPickerMeal(opts.meal);
-    setPickerPerson(opts.person);
-    setPickerDate(opts.dateOnly);
-    setPickerQuery("");
-    setPickerOpen(true);
+  function openMobilePicker(key: string) {
+    setMobilePickerKey(key);
+    setMobilePickerQuery("");
   }
 
-  function closePicker() {
-    setPickerOpen(false);
-    setPickerKey("");
-    setPickerQuery("");
+  function closeMobilePicker() {
+    setMobilePickerKey(null);
+    setMobilePickerQuery("");
+  }
+
+  function handlePerPersonChange(key: string, nextVal: string) {
+    setNameByKey((prev) => ({ ...prev, [key]: nextVal }));
+    if (autofilledKeys.has(key)) {
+      setAutofilledKeys((old) => {
+        const n = new Set(old);
+        n.delete(key);
+        return n;
+      });
+    }
   }
 
   async function saveDinner(dateOnly: string) {
@@ -220,137 +245,115 @@ export default function PlanGridClient(props: {
     }
   }
 
-  function handlePerPersonChange(key: string, nextVal: string) {
-    setNameByKey((prev) => ({ ...prev, [key]: nextVal }));
-    if (autofilledKeys.has(key)) {
-      setAutofilledKeys((old) => {
-        const n = new Set(old);
-        n.delete(key);
-        return n;
-      });
-    }
-  }
+  async function chooseMobileValue(chosen: string) {
+    if (!mobilePickerKey || !mobilePickerMeta) return;
 
-  async function chooseValueFromPicker(chosen: string) {
-    const key = pickerKey;
-    if (!key) return;
+    const key = mobilePickerKey;
+    const { meal, person, dateOnly } = mobilePickerMeta;
 
-    setNameByKey((prev) => ({ ...prev, [key]: chosen }));
-    if (autofilledKeys.has(key)) {
-      setAutofilledKeys((old) => {
-        const n = new Set(old);
-        n.delete(key);
-        return n;
-      });
-    }
+    handlePerPersonChange(key, chosen);
 
     try {
       setSavingKey(key);
 
-      if (pickerMeal === "dinner") {
+      if (meal === "dinner") {
         await setDinnerForDate({
           planWeekId: props.planWeekId,
-          entryDate: pickerDate,
+          entryDate: dateOnly,
           recipeName: chosen,
         });
       } else {
-        const uiMeal = pickerMeal as Exclude<MealKey, "dinner">;
-        const dbMeal = uiMealToDbMeal(uiMeal);
-        const person = pickerPerson as Exclude<PersonKey, "shared">;
+        const m = meal as Exclude<MealKey, "dinner">;
+        const p = person as Exclude<PersonKey, "shared">;
 
         await setPlanEntryForDate({
           planWeekId: props.planWeekId,
-          entryDate: pickerDate,
-          meal: dbMeal,
+          entryDate: dateOnly,
+          meal: uiMealToDbMeal(m),
           recipeName: chosen,
-          notes: notesFor(uiMeal, person),
+          notes: notesFor(m, p),
         });
       }
     } catch (e: any) {
       alert(e?.message ?? "Failed to save");
     } finally {
       setSavingKey(null);
-      closePicker();
+      closeMobilePicker();
     }
+  }
+
+  function MobileInlinePicker() {
+    if (!mobilePickerKey || !mobilePickerMeta) return null;
+
+    const current = nameByKey[mobilePickerKey] ?? "";
+    const tag = mealTagForUiKey(mobilePickerMeta.meal);
+
+    return (
+      <div className="mt-2 rounded-lg border bg-white p-2">
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="text-xs text-gray-500">
+            Filter: <span className="font-medium">{tag}</span>
+          </div>
+          <button
+            type="button"
+            onClick={closeMobilePicker}
+            className="text-xs underline text-gray-600"
+          >
+            Close
+          </button>
+        </div>
+
+        <input
+          value={mobilePickerQuery}
+          onChange={(e) => setMobilePickerQuery(e.target.value)}
+          placeholder="Search…"
+          className="w-full rounded border px-2 py-1 text-sm"
+          autoFocus
+        />
+
+        <div className="mt-2 flex gap-2 flex-wrap">
+          <button
+            type="button"
+            className="rounded border px-2 py-1 text-xs"
+            onClick={() => chooseMobileValue("Leftovers")}
+          >
+            Leftovers
+          </button>
+
+          {current.trim() !== "" && (
+            <button
+              type="button"
+              className="rounded border px-2 py-1 text-xs text-gray-700"
+              onClick={() => chooseMobileValue("")}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        <div className="mt-2 max-h-44 overflow-auto rounded border">
+          {mobilePickerOptions.length === 0 ? (
+            <div className="p-2 text-sm text-gray-500">No matches.</div>
+          ) : (
+            mobilePickerOptions.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => chooseMobileValue(r.name)}
+                className="w-full text-left px-2 py-2 border-b last:border-b-0 hover:bg-gray-50"
+              >
+                <div className="text-sm font-medium">{r.name}</div>
+                <div className="text-xs text-gray-500">Servings: {r.servings_default ?? "—"}</div>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (
     <>
-      {/* MOBILE PICKER MODAL */}
-      {pickerOpen && (
-        <div className="fixed inset-0 z-50 bg-white">
-          <div className="p-4 border-b flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold truncate">
-                Pick {pickerMeal === "snack1" || pickerMeal === "snack2" ? "Snack" : pickerMeal}
-              </div>
-              <div className="text-xs text-gray-500 truncate">
-                {pickerPerson !== "shared" ? pickerPerson : "shared"} · {pickerDate}
-              </div>
-            </div>
-            <button onClick={closePicker} className="rounded border px-3 py-2 text-sm">
-              Close
-            </button>
-          </div>
-
-          <div className="p-4 space-y-3">
-            <input
-              autoFocus
-              value={pickerQuery}
-              onChange={(e) => setPickerQuery(e.target.value)}
-              placeholder="Type to search…"
-              className="w-full rounded border px-3 py-2 text-sm"
-            />
-
-            <div className="flex gap-2 flex-wrap">
-              <button
-                onClick={() => chooseValueFromPicker("Leftovers")}
-                className="rounded border px-3 py-2 text-sm"
-              >
-                Leftovers
-              </button>
-
-              {pickerQuery.trim().length > 0 && (
-                <button
-                  onClick={() => chooseValueFromPicker(pickerQuery.trim())}
-                  className="rounded border px-3 py-2 text-sm"
-                >
-                  Use “{pickerQuery.trim()}”
-                </button>
-              )}
-
-              <button
-                onClick={() => chooseValueFromPicker("")}
-                className="rounded border px-3 py-2 text-sm text-gray-600"
-              >
-                Clear
-              </button>
-            </div>
-
-            <div className="border rounded-lg overflow-hidden">
-              {pickerOptions.length === 0 ? (
-                <div className="p-3 text-sm text-gray-500">No matches.</div>
-              ) : (
-                <div className="max-h-[65vh] overflow-auto">
-                  {pickerOptions.map((r) => (
-                    <button
-                      key={r.id}
-                      onClick={() => chooseValueFromPicker(r.name)}
-                      className="w-full text-left px-3 py-3 border-b last:border-b-0 hover:bg-gray-50"
-                    >
-                      <div className="text-sm font-medium">{r.name}</div>
-                      <div className="text-xs text-gray-500">Servings: {r.servings_default ?? "—"}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="text-xs text-gray-500">Filtered by tag: {pickerTag}</div>
-          </div>
-        </div>
-      )}
-
       {/* MOBILE */}
       <div className="block md:hidden space-y-4">
         {props.days.map((d) => {
@@ -368,33 +371,25 @@ export default function PlanGridClient(props: {
               </div>
 
               <div className="p-3 space-y-4">
-                {/* Dinner */}
+                {/* Dinner (mobile uses normal input; iOS datalist is poor but dinner is one field) */}
                 <div className="space-y-1">
                   <div className="text-sm font-medium">Dinner</div>
-
-                  <button
-                    type="button"
-                    className={`w-full rounded border px-3 py-2 text-sm text-left ${dinnerBg}`}
-                    onClick={() =>
-                      openPicker({
-                        key: dinnerKey,
-                        meal: "dinner",
-                        person: "shared",
-                        dateOnly: d.dateOnly,
-                      })
-                    }
-                  >
-                    {dinnerVal ? dinnerVal : <span className="text-gray-400">Select recipe</span>}
-                  </button>
-
+                  <input
+                    className={`w-full rounded border px-3 py-2 text-sm ${dinnerBg}`}
+                    list="dinner-recipes-list"
+                    value={dinnerVal}
+                    placeholder="Select recipe"
+                    onChange={(e) => setNameByKey((prev) => ({ ...prev, [dinnerKey]: e.target.value }))}
+                    onFocus={(e) => e.currentTarget.select()}
+                    onBlur={() => saveDinner(d.dateOnly)}
+                  />
                   <div className="text-xs text-gray-500">{savingKey === dinnerKey ? "Saving…" : ""}</div>
-
                   {dinnerVal && !recipeNames.has(dinnerVal) && (
                     <div className="text-xs text-amber-700">Not in recipes list</div>
                   )}
                 </div>
 
-                {/* Per-person meals */}
+                {/* Per-person meals: tap-to-open compact inline picker */}
                 {MEALS.filter((m) => m.perPerson).map((meal) => (
                   <div key={meal.key} className="space-y-2">
                     <div className="text-sm font-medium">{meal.label}</div>
@@ -407,6 +402,8 @@ export default function PlanGridClient(props: {
                         const isAutofilled = autofilledKeys.has(k);
                         const bg = cellBg(isEmpty, isAutofilled);
 
+                        const pickerOpenHere = mobilePickerKey === k;
+
                         return (
                           <div key={k} className="space-y-1">
                             <div className="text-xs text-gray-500">{p.label}</div>
@@ -414,19 +411,14 @@ export default function PlanGridClient(props: {
                             <button
                               type="button"
                               className={`w-full rounded border px-3 py-2 text-sm text-left ${bg}`}
-                              onClick={() =>
-                                openPicker({
-                                  key: k,
-                                  meal: meal.key,
-                                  person: p.key,
-                                  dateOnly: d.dateOnly,
-                                })
-                              }
+                              onClick={() => (pickerOpenHere ? closeMobilePicker() : openMobilePicker(k))}
                             >
                               {val ? val : <span className="text-gray-400">Select</span>}
                             </button>
 
                             <div className="text-xs text-gray-500">{savingKey === k ? "Saving…" : ""}</div>
+
+                            {pickerOpenHere && <MobileInlinePicker />}
 
                             {val && val !== "Leftovers" && !recipeNames.has(val) && (
                               <div className="text-xs text-amber-700">Not in recipes list</div>
@@ -441,6 +433,13 @@ export default function PlanGridClient(props: {
             </div>
           );
         })}
+
+        {/* Desktop-style datalists still exist; mobile per-person uses picker instead */}
+        <datalist id="dinner-recipes-list">
+          {recipesDinner.map((r) => (
+            <option key={r.id} value={r.name} />
+          ))}
+        </datalist>
       </div>
 
       {/* DESKTOP */}
@@ -471,7 +470,7 @@ export default function PlanGridClient(props: {
                     <div key={k} className="p-3 border-r last:border-r-0 text-sm">
                       <input
                         className={`w-full rounded border px-2 py-1 text-sm ${bg}`}
-                        list="dinner-recipes-list"
+                        list="dinner-recipes-list-desktop"
                         value={val}
                         placeholder="Select recipe"
                         onChange={(e) => setNameByKey((prev) => ({ ...prev, [k]: e.target.value }))}
@@ -488,6 +487,13 @@ export default function PlanGridClient(props: {
               </div>
             );
           }
+
+          const listId =
+            meal.key === "breakfast"
+              ? "breakfast-recipes-list-desktop"
+              : meal.key === "lunch"
+              ? "lunch-recipes-list-desktop"
+              : "snack-recipes-list-desktop"; // snack1/snack2 both use snack
 
           return (
             <div key={meal.key} className="border-b last:border-b-0">
@@ -515,7 +521,7 @@ export default function PlanGridClient(props: {
                       >
                         <input
                           className={`w-full rounded border px-2 py-1 text-sm ${bg}`}
-                          list="meal-recipes-list"
+                          list={listId}
                           value={val}
                           placeholder="Select"
                           onChange={(e) => handlePerPersonChange(k, e.target.value)}
@@ -539,15 +545,30 @@ export default function PlanGridClient(props: {
           );
         })}
 
-        <datalist id="dinner-recipes-list">
-          {props.recipes.map((r) => (
+        {/* Desktop datalists (filtered by meal tag) */}
+        <datalist id="dinner-recipes-list-desktop">
+          {recipesDinner.map((r) => (
             <option key={r.id} value={r.name} />
           ))}
         </datalist>
 
-        <datalist id="meal-recipes-list">
+        <datalist id="breakfast-recipes-list-desktop">
           <option value="Leftovers" />
-          {props.recipes.map((r) => (
+          {recipesBreakfast.map((r) => (
+            <option key={r.id} value={r.name} />
+          ))}
+        </datalist>
+
+        <datalist id="lunch-recipes-list-desktop">
+          <option value="Leftovers" />
+          {recipesLunch.map((r) => (
+            <option key={r.id} value={r.name} />
+          ))}
+        </datalist>
+
+        <datalist id="snack-recipes-list-desktop">
+          <option value="Leftovers" />
+          {recipesSnack.map((r) => (
             <option key={r.id} value={r.name} />
           ))}
         </datalist>
