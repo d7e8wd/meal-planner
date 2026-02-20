@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AddToPlan from "./AddToPlan";
 
@@ -70,6 +70,7 @@ const TAG_OPTIONS = ["breakfast", "lunch", "dinner", "snack"] as const;
 
 export default function RecipeDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const recipeId = params.id;
 
   // Only for initial load (do NOT flip this during add/save/delete)
@@ -78,6 +79,12 @@ export default function RecipeDetailPage() {
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [items, setItems] = useState<RecipeItem[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
+
+  // Recipe meta editing
+  const [recipeName, setRecipeName] = useState("");
+  const [recipeServings, setRecipeServings] = useState<number>(2);
+  const [savingMeta, setSavingMeta] = useState(false);
+  const [deletingRecipe, setDeletingRecipe] = useState(false);
 
   // Add-line state
   const [ingredientText, setIngredientText] = useState<string>("");
@@ -219,6 +226,8 @@ export default function RecipeDetailPage() {
     setRecipe(rec);
     setInstructions((rec.instructions ?? "") as string);
     setMealTags(((rec.meal_tags ?? []) as string[]) ?? []);
+    setRecipeName(rec.name ?? "");
+    setRecipeServings(Number(rec.servings_default ?? 2));
 
     const { data: it, error: itErr } = await supabase
       .from("recipe_items")
@@ -283,6 +292,73 @@ export default function RecipeDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recipeId]);
 
+  async function saveRecipeMeta() {
+    if (!recipe) return;
+    setMessage(null);
+
+    const nextName = recipeName.trim();
+    const nextServ = Number(recipeServings);
+
+    if (!nextName) {
+      setMessage("Recipe name cannot be blank.");
+      return;
+    }
+    if (!Number.isFinite(nextServ) || nextServ <= 0) {
+      setMessage("Default servings must be a number > 0.");
+      return;
+    }
+
+    setSavingMeta(true);
+
+    const { error } = await supabase
+      .from("recipes")
+      .update({ name: nextName, servings_default: nextServ })
+      .eq("id", recipe.id);
+
+    setSavingMeta(false);
+
+    if (error) {
+      setMessage("Error saving recipe: " + error.message);
+      return;
+    }
+
+    setMessage("Recipe saved.");
+    await fetchAll(true);
+  }
+
+  async function deleteRecipe() {
+    if (!recipe) return;
+
+    const ok = confirm(
+      `Delete recipe "${recipe.name}"?\n\nThis will also remove all its ingredient lines.`
+    );
+    if (!ok) return;
+
+    setMessage(null);
+    setDeletingRecipe(true);
+
+    // 1) delete recipe_items
+    const { error: delItemsErr } = await supabase.from("recipe_items").delete().eq("recipe_id", recipe.id);
+
+    if (delItemsErr) {
+      setDeletingRecipe(false);
+      setMessage("Error deleting ingredient lines: " + delItemsErr.message);
+      return;
+    }
+
+    // 2) delete recipe
+    const { error: delRecipeErr } = await supabase.from("recipes").delete().eq("id", recipe.id);
+
+    setDeletingRecipe(false);
+
+    if (delRecipeErr) {
+      setMessage("Error deleting recipe: " + delRecipeErr.message);
+      return;
+    }
+
+    router.push("/recipes");
+  }
+
   async function addItem() {
     setMessage(null);
 
@@ -311,7 +387,6 @@ export default function RecipeDetailPage() {
       return;
     }
 
-    // Keep user in place; do not flip page to "Loading…"
     setIngredientText("");
     setQty(1);
     setUnit("each");
@@ -397,10 +472,17 @@ export default function RecipeDetailPage() {
     setSavingTags(true);
 
     const cleaned = Array.from(
-      new Set(mealTags.map((t) => String(t).trim().toLowerCase()).filter((t) => t.length > 0))
+      new Set(
+        mealTags
+          .map((t) => String(t).trim().toLowerCase())
+          .filter((t) => t.length > 0)
+      )
     );
 
-    const { error } = await supabase.from("recipes").update({ meal_tags: cleaned }).eq("id", recipe.id);
+    const { error } = await supabase
+      .from("recipes")
+      .update({ meal_tags: cleaned })
+      .eq("id", recipe.id);
 
     setSavingTags(false);
 
@@ -488,8 +570,82 @@ export default function RecipeDetailPage() {
         ← Back to recipes
       </a>
 
-      <h1 style={{ fontSize: 28, fontWeight: 700, marginTop: 10 }}>{recipe.name}</h1>
-      <div style={{ marginTop: 6, color: "#666" }}>Default servings: {recipe.servings_default ?? "—"}</div>
+      {/* Title + default servings + delete */}
+      <div
+        style={{
+          marginTop: 10,
+          padding: 16,
+          border: "1px solid #ddd",
+          borderRadius: 12,
+        }}
+      >
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+          <label style={{ flex: "1 1 320px" }}>
+            <div style={{ fontSize: 14, marginBottom: 6 }}>Recipe name</div>
+            <input
+              value={recipeName}
+              onChange={(e) => setRecipeName(e.target.value)}
+              style={{
+                width: "100%",
+                padding: 10,
+                border: "1px solid #ccc",
+                borderRadius: 8,
+                fontWeight: 700,
+              }}
+            />
+          </label>
+
+          <label style={{ flex: "0 0 180px" }}>
+            <div style={{ fontSize: 14, marginBottom: 6 }}>Default servings</div>
+            <input
+              type="number"
+              min={1}
+              value={recipeServings}
+              onChange={(e) => setRecipeServings(Number(e.target.value))}
+              style={{
+                width: "100%",
+                padding: 10,
+                border: "1px solid #ccc",
+                borderRadius: 8,
+              }}
+            />
+          </label>
+
+          <button
+            type="button"
+            onClick={saveRecipeMeta}
+            disabled={savingMeta || deletingRecipe}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 10,
+              border: "1px solid #333",
+              width: 180,
+              background: savingMeta ? "#eee" : "#fff",
+              height: 42,
+            }}
+          >
+            {savingMeta ? "Saving…" : "Save recipe"}
+          </button>
+
+          <button
+            type="button"
+            onClick={deleteRecipe}
+            disabled={deletingRecipe || savingMeta}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 10,
+              border: "1px solid #c33",
+              color: "#c33",
+              width: 160,
+              background: deletingRecipe ? "#fee" : "#fff",
+              height: 42,
+            }}
+            title="Delete this recipe"
+          >
+            {deletingRecipe ? "Deleting…" : "Delete"}
+          </button>
+        </div>
+      </div>
 
       <div style={{ marginTop: 14 }}>
         <AddToPlan recipeId={recipeId} />
@@ -538,6 +694,7 @@ export default function RecipeDetailPage() {
         </div>
       </div>
 
+      {/* Instructions */}
       <div style={{ marginTop: 22, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Instructions</h2>
 
@@ -573,6 +730,7 @@ export default function RecipeDetailPage() {
         </div>
       </div>
 
+      {/* Add ingredient line */}
       <div style={{ marginTop: 22, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Add ingredient line</h2>
 
@@ -740,6 +898,7 @@ export default function RecipeDetailPage() {
         </div>
       </div>
 
+      {/* Ingredient rows */}
       <div style={{ marginTop: 22 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 10 }}>Ingredients</h2>
 
