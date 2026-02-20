@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import AddToPlan from "./AddToPlan";
@@ -35,6 +35,10 @@ function normaliseName(s: string) {
 function stripCategoryLabel(s: string) {
   const m = s.match(/^(.*)\s+\([^()]+\)\s*$/);
   return m ? m[1].trim() : s.trim();
+}
+
+function norm(s: string) {
+  return (s ?? "").trim().toLowerCase();
 }
 
 const UNIT_OPTIONS = [
@@ -79,6 +83,11 @@ export default function RecipeDetailPage() {
   const [unit, setUnit] = useState<string>("each");
   const [message, setMessage] = useState<string | null>(null);
 
+  // Inline dropdown state (replaces <datalist>)
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const ingredientInputRef = useRef<HTMLInputElement | null>(null);
+  const blurCloseTimer = useRef<number | null>(null);
+
   // Inline add-new-ingredient state
   const [addingIngredient, setAddingIngredient] = useState(false);
   const [newCategory, setNewCategory] = useState("Other");
@@ -105,16 +114,6 @@ export default function RecipeDetailPage() {
     >
   >({});
 
-  // simple mobile detection for layout tweaks
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 768px)");
-    const apply = () => setIsMobile(mq.matches);
-    apply();
-    mq.addEventListener?.("change", apply);
-    return () => mq.removeEventListener?.("change", apply);
-  }, []);
-
   const ingredientByLabel = useMemo(() => {
     const map = new Map<string, Ingredient>();
     for (const i of ingredients) {
@@ -122,6 +121,15 @@ export default function RecipeDetailPage() {
       map.set(label, i);
     }
     return map;
+  }, [ingredients]);
+
+  const ingredientOptions = useMemo(() => {
+    // Precompute labels and searchable strings once
+    return ingredients.map((i) => {
+      const label = `${i.name} (${i.category})`;
+      const search = `${i.name} ${i.category}`.toLowerCase();
+      return { ingredient: i, label, search };
+    });
   }, [ingredients]);
 
   const categories = useMemo(() => {
@@ -143,6 +151,41 @@ export default function RecipeDetailPage() {
   const showAddIngredientPanel = useMemo(() => {
     return typedName.length > 0 && !selectedIngredient;
   }, [typedName, selectedIngredient]);
+
+  const filteredIngredientOptions = useMemo(() => {
+    const q = norm(ingredientText);
+    const base = q
+      ? ingredientOptions.filter((o) => o.search.includes(q))
+      : ingredientOptions;
+
+    // Keep list snappy on mobile
+    return base.slice(0, 50);
+  }, [ingredientOptions, ingredientText]);
+
+  function openPicker() {
+    if (blurCloseTimer.current) {
+      window.clearTimeout(blurCloseTimer.current);
+      blurCloseTimer.current = null;
+    }
+    setIsPickerOpen(true);
+  }
+
+  function scheduleClosePicker() {
+    if (blurCloseTimer.current) window.clearTimeout(blurCloseTimer.current);
+    // small delay so clicks on options can register before blur closes it
+    blurCloseTimer.current = window.setTimeout(() => {
+      setIsPickerOpen(false);
+      blurCloseTimer.current = null;
+    }, 120);
+  }
+
+  function selectIngredientOption(label: string, ing: Ingredient) {
+    setIngredientText(label);
+    setUnit(ing.default_unit || "each");
+    setIsPickerOpen(false);
+    // keep focus pleasant
+    requestAnimationFrame(() => ingredientInputRef.current?.focus());
+  }
 
   async function loadAll() {
     setLoading(true);
@@ -345,10 +388,17 @@ export default function RecipeDetailPage() {
 
     // Store exactly as lowercase strings, multi-select allowed
     const cleaned = Array.from(
-      new Set(mealTags.map((t) => String(t).trim().toLowerCase()).filter((t) => t.length > 0))
+      new Set(
+        mealTags
+          .map((t) => String(t).trim().toLowerCase())
+          .filter((t) => t.length > 0)
+      )
     );
 
-    const { error } = await supabase.from("recipes").update({ meal_tags: cleaned }).eq("id", recipe.id);
+    const { error } = await supabase
+      .from("recipes")
+      .update({ meal_tags: cleaned })
+      .eq("id", recipe.id);
 
     setSavingTags(false);
 
@@ -411,6 +461,22 @@ export default function RecipeDetailPage() {
     await loadAll();
   }
 
+  // Close picker when tapping outside
+  useEffect(() => {
+    function onDocDown(e: MouseEvent | TouchEvent) {
+      if (!isPickerOpen) return;
+      const target = e.target as Node;
+      const wrapper = ingredientInputRef.current?.parentElement;
+      if (wrapper && !wrapper.contains(target)) setIsPickerOpen(false);
+    }
+    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("touchstart", onDocDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("touchstart", onDocDown);
+    };
+  }, [isPickerOpen]);
+
   if (loading) return <div style={{ padding: 40 }}>Loading…</div>;
   if (!recipe) return <div style={{ padding: 40 }}>Recipe not found.</div>;
 
@@ -421,7 +487,9 @@ export default function RecipeDetailPage() {
       </a>
 
       <h1 style={{ fontSize: 28, fontWeight: 700, marginTop: 10 }}>{recipe.name}</h1>
-      <div style={{ marginTop: 6, color: "#666" }}>Default servings: {recipe.servings_default ?? "—"}</div>
+      <div style={{ marginTop: 6, color: "#666" }}>
+        Default servings: {recipe.servings_default ?? "—"}
+      </div>
 
       <div style={{ marginTop: 14 }}>
         <AddToPlan recipeId={recipeId} />
@@ -509,24 +577,66 @@ export default function RecipeDetailPage() {
         <div style={{ display: "grid", gap: 10 }}>
           <label>
             <div style={{ fontSize: 14, marginBottom: 6 }}>Ingredient (type to search)</div>
-            <input
-              list="ingredient-options"
-              value={ingredientText}
-              onChange={(e) => {
-                const v = e.target.value;
-                setIngredientText(v);
-                const sel = ingredientByLabel.get(v);
-                if (sel) setUnit(sel.default_unit || "each");
-              }}
-              placeholder="Search ingredients (e.g. onion)…"
-              style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
-            />
-            <datalist id="ingredient-options">
-              {ingredients.map((i) => {
-                const label = `${i.name} (${i.category})`;
-                return <option key={i.id} value={label} />;
-              })}
-            </datalist>
+
+            {/* Wrapper for inline dropdown */}
+            <div style={{ position: "relative" }}>
+              <input
+                ref={ingredientInputRef}
+                value={ingredientText}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setIngredientText(v);
+
+                  // If user types an exact label, keep unit in sync
+                  const sel = ingredientByLabel.get(v);
+                  if (sel) setUnit(sel.default_unit || "each");
+
+                  // keep dropdown usable
+                  setIsPickerOpen(true);
+                }}
+                onFocus={() => openPicker()}
+                onBlur={() => scheduleClosePicker()}
+                placeholder="Search ingredients (e.g. onion)…"
+                style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+              />
+
+              {isPickerOpen && filteredIngredientOptions.length > 0 && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 6px)",
+                    left: 0,
+                    right: 0,
+                    zIndex: 50,
+                    background: "#fff",
+                    border: "1px solid #ddd",
+                    borderRadius: 10,
+                    boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
+                    maxHeight: 260,
+                    overflowY: "auto",
+                  }}
+                >
+                  {filteredIngredientOptions.map((opt) => (
+                    <div
+                      key={opt.ingredient.id}
+                      // use onMouseDown so selection happens before input blur closes dropdown
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        selectIngredientOption(opt.label, opt.ingredient);
+                      }}
+                      style={{
+                        padding: "10px 12px",
+                        cursor: "pointer",
+                        borderTop: "1px solid #f2f2f2",
+                      }}
+                    >
+                      <div style={{ fontWeight: 600 }}>{opt.ingredient.name}</div>
+                      <div style={{ fontSize: 12, color: "#666" }}>{opt.ingredient.category}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </label>
 
           {showAddIngredientPanel && (
@@ -638,7 +748,9 @@ export default function RecipeDetailPage() {
             </button>
           </div>
 
-          {message && <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>}
+          {message && (
+            <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>
+          )}
         </div>
       </div>
 
@@ -663,12 +775,11 @@ export default function RecipeDetailPage() {
                   key={it.id}
                   style={{
                     display: "flex",
-                    flexDirection: isMobile ? "column" : "row",
                     justifyContent: "space-between",
-                    gap: isMobile ? 10 : 12,
+                    gap: 12,
                     padding: 12,
                     borderTop: idx === 0 ? "none" : "1px solid #eee",
-                    alignItems: isMobile ? "stretch" : "center",
+                    alignItems: "center",
                   }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -686,19 +797,13 @@ export default function RecipeDetailPage() {
                       {it.ingredient?.category ?? ""}
                     </div>
                     {ed.error ? (
-                      <div style={{ fontSize: 12, color: "#b00020", marginTop: 6 }}>{ed.error}</div>
+                      <div style={{ fontSize: 12, color: "#b00020", marginTop: 6 }}>
+                        {ed.error}
+                      </div>
                     ) : null}
                   </div>
 
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 8,
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      justifyContent: isMobile ? "flex-start" : "flex-end",
-                    }}
-                  >
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <input
                       type="number"
                       step="0.1"
@@ -706,8 +811,7 @@ export default function RecipeDetailPage() {
                       value={ed.qty}
                       onChange={(e) => patchEditRow(it.id, { qty: e.target.value, error: null })}
                       style={{
-                        width: isMobile ? "48%" : 90,
-                        minWidth: isMobile ? 120 : 90,
+                        width: 90,
                         padding: 8,
                         border: "1px solid #ccc",
                         borderRadius: 8,
@@ -718,13 +822,7 @@ export default function RecipeDetailPage() {
                     <select
                       value={ed.unit}
                       onChange={(e) => patchEditRow(it.id, { unit: e.target.value, error: null })}
-                      style={{
-                        width: isMobile ? "48%" : 110,
-                        minWidth: isMobile ? 140 : 110,
-                        padding: 8,
-                        border: "1px solid #ccc",
-                        borderRadius: 8,
-                      }}
+                      style={{ width: 110, padding: 8, border: "1px solid #ccc", borderRadius: 8 }}
                     >
                       {UNIT_OPTIONS.map((u) => (
                         <option key={u} value={u}>
@@ -741,7 +839,7 @@ export default function RecipeDetailPage() {
                         borderRadius: 10,
                         border: "1px solid #333",
                         background: ed.saving ? "#eee" : "#fff",
-                        minWidth: isMobile ? "48%" : 70,
+                        minWidth: 70,
                       }}
                     >
                       {ed.saving ? "Saving…" : "Save"}
@@ -755,7 +853,6 @@ export default function RecipeDetailPage() {
                         border: "1px solid #ccc",
                         background: "#fff",
                         color: "#666",
-                        minWidth: isMobile ? "48%" : undefined,
                       }}
                       title="Remove this line"
                     >
