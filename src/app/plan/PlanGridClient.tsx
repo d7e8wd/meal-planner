@@ -15,7 +15,7 @@ type Recipe = {
 type MealKey = "breakfast" | "lunch" | "dinner" | "snack1" | "snack2";
 type PersonKey = "charlie" | "lucy" | "shared";
 
-// IMPORTANT: DB enum values (confirmed)
+// DB enum (confirmed)
 type DbMeal = "breakfast" | "lunch" | "dinner" | "snack";
 
 const MEALS: { key: MealKey; label: string; perPerson: boolean }[] = [
@@ -54,6 +54,13 @@ function mealTagForUiKey(meal: MealKey): "breakfast" | "lunch" | "dinner" | "sna
 function hasTag(recipe: Recipe, tag: "breakfast" | "lunch" | "dinner" | "snack") {
   const tags = (recipe.meal_tags ?? []).map((t) => String(t).toLowerCase());
   return tags.includes(tag);
+}
+
+function notesFor(meal: Exclude<MealKey, "dinner">, person: Exclude<PersonKey, "shared">): string {
+  // breakfast/lunch: notes = "charlie" / "lucy"
+  // snack1/snack2: notes = "charlie|snack1" etc
+  if (meal === "snack1" || meal === "snack2") return `${person}|${meal}`;
+  return person;
 }
 
 export default function PlanGridClient(props: {
@@ -203,10 +210,8 @@ export default function PlanGridClient(props: {
         planWeekId: props.planWeekId,
         entryDate: dateOnly,
         meal: uiMealToDbMeal(meal),
-        person,
         recipeName,
-        // NOTE: snack1/snack2 distinction is already handled server-side via notes in your agreed approach,
-        // but if your server action expects notes keys, it will derive from person + slot.
+        notes: notesFor(meal, person),
       });
     } catch (e: any) {
       alert(e?.message ?? `Failed to save ${meal}`);
@@ -257,8 +262,8 @@ export default function PlanGridClient(props: {
           planWeekId: props.planWeekId,
           entryDate: pickerDate,
           meal: dbMeal,
-          person,
           recipeName: chosen,
+          notes: notesFor(uiMeal, person),
         });
       }
     } catch (e: any) {
@@ -334,9 +339,7 @@ export default function PlanGridClient(props: {
                       className="w-full text-left px-3 py-3 border-b last:border-b-0 hover:bg-gray-50"
                     >
                       <div className="text-sm font-medium">{r.name}</div>
-                      <div className="text-xs text-gray-500">
-                        Servings: {r.servings_default ?? "—"}
-                      </div>
+                      <div className="text-xs text-gray-500">Servings: {r.servings_default ?? "—"}</div>
                     </button>
                   ))}
                 </div>
