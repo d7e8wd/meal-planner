@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 export const dynamic = "force-dynamic";
 
@@ -66,7 +67,12 @@ function renderRecipeRow(r: Recipe) {
   );
 }
 
-function Section(props: { title: string; count: number; defaultOpen?: boolean; children: React.ReactNode }) {
+function Section(props: {
+  title: string;
+  count: number;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <details
       open={!!props.defaultOpen}
@@ -114,6 +120,8 @@ function Section(props: { title: string; count: number; defaultOpen?: boolean; c
 }
 
 export default function RecipesPage() {
+  const router = useRouter();
+
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -155,7 +163,7 @@ export default function RecipesPage() {
 
     setCreating(true);
 
-    // Find user's household_id via membership (same pattern as /ingredients)
+    // Find user's household_id via membership
     const { data: membership, error: memErr } = await supabase
       .from("household_members")
       .select("household_id")
@@ -174,13 +182,17 @@ export default function RecipesPage() {
       return;
     }
 
-    const { error } = await supabase.from("recipes").insert({
-      household_id: membership.household_id,
-      name: trimmed,
-      servings_default: servings,
-      instructions: "",
-      // meal_tags left empty by default; user sets on recipe page
-    });
+    // Insert and get the new recipe id back so we can navigate straight to it
+    const { data: created, error } = await supabase
+      .from("recipes")
+      .insert({
+        household_id: membership.household_id,
+        name: trimmed,
+        servings_default: servings,
+        instructions: "",
+      })
+      .select("id")
+      .single();
 
     setCreating(false);
 
@@ -189,10 +201,17 @@ export default function RecipesPage() {
       return;
     }
 
+    const newId = created?.id;
+    if (!newId) {
+      setMessage("Recipe created, but could not read its ID.");
+      await loadRecipes();
+      return;
+    }
+
+    // Clear form + go to the recipe detail page for building
     setName("");
     setServings(2);
-    await loadRecipes();
-    setMessage("Recipe created.");
+    router.push(`/recipes/${newId}`);
   };
 
   const grouped = useMemo(() => {
@@ -265,11 +284,11 @@ export default function RecipesPage() {
               padding: "10px 14px",
               borderRadius: 10,
               border: "1px solid #333",
-              width: 180,
+              width: 220,
               background: creating ? "#eee" : "#fff",
             }}
           >
-            {creating ? "Creating…" : "Create recipe"}
+            {creating ? "Creating…" : "Create + edit recipe"}
           </button>
 
           {message && (
@@ -290,23 +309,43 @@ export default function RecipesPage() {
         ) : (
           <div style={{ display: "grid", gap: 12 }}>
             <Section title="Dinner" count={grouped.dinner.length} defaultOpen>
-              {grouped.dinner.length ? grouped.dinner.map(renderRecipeRow) : <div style={{ padding: 12, color: "#666" }}>No dinner recipes.</div>}
+              {grouped.dinner.length ? (
+                grouped.dinner.map(renderRecipeRow)
+              ) : (
+                <div style={{ padding: 12, color: "#666" }}>No dinner recipes.</div>
+              )}
             </Section>
 
             <Section title="Lunch" count={grouped.lunch.length}>
-              {grouped.lunch.length ? grouped.lunch.map(renderRecipeRow) : <div style={{ padding: 12, color: "#666" }}>No lunch recipes.</div>}
+              {grouped.lunch.length ? (
+                grouped.lunch.map(renderRecipeRow)
+              ) : (
+                <div style={{ padding: 12, color: "#666" }}>No lunch recipes.</div>
+              )}
             </Section>
 
             <Section title="Breakfast" count={grouped.breakfast.length}>
-              {grouped.breakfast.length ? grouped.breakfast.map(renderRecipeRow) : <div style={{ padding: 12, color: "#666" }}>No breakfast recipes.</div>}
+              {grouped.breakfast.length ? (
+                grouped.breakfast.map(renderRecipeRow)
+              ) : (
+                <div style={{ padding: 12, color: "#666" }}>No breakfast recipes.</div>
+              )}
             </Section>
 
             <Section title="Snack" count={grouped.snack.length}>
-              {grouped.snack.length ? grouped.snack.map(renderRecipeRow) : <div style={{ padding: 12, color: "#666" }}>No snack recipes.</div>}
+              {grouped.snack.length ? (
+                grouped.snack.map(renderRecipeRow)
+              ) : (
+                <div style={{ padding: 12, color: "#666" }}>No snack recipes.</div>
+              )}
             </Section>
 
             <Section title="Other" count={grouped.other.length}>
-              {grouped.other.length ? grouped.other.map(renderRecipeRow) : <div style={{ padding: 12, color: "#666" }}>No untagged recipes.</div>}
+              {grouped.other.length ? (
+                grouped.other.map(renderRecipeRow)
+              ) : (
+                <div style={{ padding: 12, color: "#666" }}>No untagged recipes.</div>
+              )}
             </Section>
           </div>
         )}
