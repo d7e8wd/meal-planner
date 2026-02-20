@@ -15,6 +15,9 @@ type Recipe = {
 type MealKey = "breakfast" | "lunch" | "dinner" | "snack1" | "snack2";
 type PersonKey = "charlie" | "lucy" | "shared";
 
+// IMPORTANT: DB enum values (confirmed)
+type DbMeal = "breakfast" | "lunch" | "dinner" | "snack";
+
 const MEALS: { key: MealKey; label: string; perPerson: boolean }[] = [
   { key: "breakfast", label: "Breakfast", perPerson: true },
   { key: "lunch", label: "Lunch", perPerson: true },
@@ -38,7 +41,12 @@ function normalise(s: string) {
   return (s ?? "").trim().toLowerCase();
 }
 
-function mealTagForKey(meal: MealKey): "breakfast" | "lunch" | "dinner" | "snack" {
+function uiMealToDbMeal(meal: MealKey): DbMeal {
+  if (meal === "snack1" || meal === "snack2") return "snack";
+  return meal;
+}
+
+function mealTagForUiKey(meal: MealKey): "breakfast" | "lunch" | "dinner" | "snack" {
   if (meal === "snack1" || meal === "snack2") return "snack";
   return meal;
 }
@@ -103,31 +111,19 @@ export default function PlanGridClient(props: {
   const [pickerDate, setPickerDate] = useState<string>("");
   const [pickerQuery, setPickerQuery] = useState<string>("");
 
-  const pickerTag = useMemo(() => mealTagForKey(pickerMeal), [pickerMeal]);
+  const pickerTag = useMemo(() => mealTagForUiKey(pickerMeal), [pickerMeal]);
 
   const pickerOptions = useMemo(() => {
     const q = normalise(pickerQuery);
 
-    // Filter by meal tag (except dinner uses dinner)
     const tagged = props.recipes.filter((r) => hasTag(r, pickerTag));
-
-    // If no tags exist for anything yet, fall back to all recipes
     const base = tagged.length > 0 ? tagged : props.recipes;
 
-    const filtered = q
-      ? base.filter((r) => normalise(r.name).includes(q))
-      : base;
-
-    // Cap for sanity
+    const filtered = q ? base.filter((r) => normalise(r.name).includes(q)) : base;
     return filtered.slice(0, 40);
   }, [props.recipes, pickerQuery, pickerTag]);
 
-  function openPicker(opts: {
-    key: string;
-    meal: MealKey;
-    person: PersonKey;
-    dateOnly: string;
-  }) {
+  function openPicker(opts: { key: string; meal: MealKey; person: PersonKey; dateOnly: string }) {
     setPickerKey(opts.key);
     setPickerMeal(opts.meal);
     setPickerPerson(opts.person);
@@ -206,9 +202,11 @@ export default function PlanGridClient(props: {
       await setPlanEntryForDate({
         planWeekId: props.planWeekId,
         entryDate: dateOnly,
-        meal,
+        meal: uiMealToDbMeal(meal),
         person,
         recipeName,
+        // NOTE: snack1/snack2 distinction is already handled server-side via notes in your agreed approach,
+        // but if your server action expects notes keys, it will derive from person + slot.
       });
     } catch (e: any) {
       alert(e?.message ?? `Failed to save ${meal}`);
@@ -232,7 +230,6 @@ export default function PlanGridClient(props: {
     const key = pickerKey;
     if (!key) return;
 
-    // Set value and clear autofill highlight if user changes
     setNameByKey((prev) => ({ ...prev, [key]: chosen }));
     if (autofilledKeys.has(key)) {
       setAutofilledKeys((old) => {
@@ -242,25 +239,24 @@ export default function PlanGridClient(props: {
       });
     }
 
-    // Save immediately (mobile avoids blur issues)
     try {
+      setSavingKey(key);
+
       if (pickerMeal === "dinner") {
-        await (async () => {
-          setSavingKey(key);
-          await setDinnerForDate({
-            planWeekId: props.planWeekId,
-            entryDate: pickerDate,
-            recipeName: chosen,
-          });
-        })();
+        await setDinnerForDate({
+          planWeekId: props.planWeekId,
+          entryDate: pickerDate,
+          recipeName: chosen,
+        });
       } else {
-        const meal = pickerMeal as Exclude<MealKey, "dinner">;
+        const uiMeal = pickerMeal as Exclude<MealKey, "dinner">;
+        const dbMeal = uiMealToDbMeal(uiMeal);
         const person = pickerPerson as Exclude<PersonKey, "shared">;
-        setSavingKey(key);
+
         await setPlanEntryForDate({
           planWeekId: props.planWeekId,
           entryDate: pickerDate,
-          meal,
+          meal: dbMeal,
           person,
           recipeName: chosen,
         });
@@ -287,10 +283,7 @@ export default function PlanGridClient(props: {
                 {pickerPerson !== "shared" ? pickerPerson : "shared"} · {pickerDate}
               </div>
             </div>
-            <button
-              onClick={closePicker}
-              className="rounded border px-3 py-2 text-sm"
-            >
+            <button onClick={closePicker} className="rounded border px-3 py-2 text-sm">
               Close
             </button>
           </div>
@@ -350,9 +343,7 @@ export default function PlanGridClient(props: {
               )}
             </div>
 
-            <div className="text-xs text-gray-500">
-              {pickerTag ? `Filtered by tag: ${pickerTag}` : ""}
-            </div>
+            <div className="text-xs text-gray-500">Filtered by tag: {pickerTag}</div>
           </div>
         </div>
       )}
@@ -374,7 +365,7 @@ export default function PlanGridClient(props: {
               </div>
 
               <div className="p-3 space-y-4">
-                {/* Dinner (shared) */}
+                {/* Dinner */}
                 <div className="space-y-1">
                   <div className="text-sm font-medium">Dinner</div>
 
@@ -393,9 +384,7 @@ export default function PlanGridClient(props: {
                     {dinnerVal ? dinnerVal : <span className="text-gray-400">Select recipe</span>}
                   </button>
 
-                  <div className="text-xs text-gray-500">
-                    {savingKey === dinnerKey ? "Saving…" : ""}
-                  </div>
+                  <div className="text-xs text-gray-500">{savingKey === dinnerKey ? "Saving…" : ""}</div>
 
                   {dinnerVal && !recipeNames.has(dinnerVal) && (
                     <div className="text-xs text-amber-700">Not in recipes list</div>
@@ -434,9 +423,7 @@ export default function PlanGridClient(props: {
                               {val ? val : <span className="text-gray-400">Select</span>}
                             </button>
 
-                            <div className="text-xs text-gray-500">
-                              {savingKey === k ? "Saving…" : ""}
-                            </div>
+                            <div className="text-xs text-gray-500">{savingKey === k ? "Saving…" : ""}</div>
 
                             {val && val !== "Leftovers" && !recipeNames.has(val) && (
                               <div className="text-xs text-amber-700">Not in recipes list</div>
@@ -484,15 +471,11 @@ export default function PlanGridClient(props: {
                         list="dinner-recipes-list"
                         value={val}
                         placeholder="Select recipe"
-                        onChange={(e) =>
-                          setNameByKey((prev) => ({ ...prev, [k]: e.target.value }))
-                        }
+                        onChange={(e) => setNameByKey((prev) => ({ ...prev, [k]: e.target.value }))}
                         onFocus={(e) => e.currentTarget.select()}
                         onBlur={() => saveDinner(d.dateOnly)}
                       />
-                      <div className="mt-1 text-xs text-gray-500">
-                        {savingKey === k ? "Saving…" : ""}
-                      </div>
+                      <div className="mt-1 text-xs text-gray-500">{savingKey === k ? "Saving…" : ""}</div>
                       {val && !recipeNames.has(val) && (
                         <div className="mt-1 text-xs text-amber-700">Not in recipes list</div>
                       )}
@@ -535,17 +518,11 @@ export default function PlanGridClient(props: {
                           onChange={(e) => handlePerPersonChange(k, e.target.value)}
                           onFocus={(e) => e.currentTarget.select()}
                           onBlur={() =>
-                            savePerPersonMeal(
-                              meal.key as Exclude<MealKey, "dinner">,
-                              p.key,
-                              d.dateOnly
-                            )
+                            savePerPersonMeal(meal.key as Exclude<MealKey, "dinner">, p.key, d.dateOnly)
                           }
                         />
 
-                        <div className="mt-1 text-xs text-gray-500">
-                          {savingKey === k ? "Saving…" : ""}
-                        </div>
+                        <div className="mt-1 text-xs text-gray-500">{savingKey === k ? "Saving…" : ""}</div>
 
                         {val && val !== "Leftovers" && !recipeNames.has(val) && (
                           <div className="mt-1 text-xs text-amber-700">Not in recipes list</div>
