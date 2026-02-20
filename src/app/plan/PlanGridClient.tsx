@@ -57,15 +57,12 @@ function hasTag(recipe: Recipe, tag: "breakfast" | "lunch" | "dinner" | "snack")
 }
 
 function notesFor(meal: Exclude<MealKey, "dinner">, person: Exclude<PersonKey, "shared">): string {
-  // breakfast/lunch: "charlie" / "lucy"
-  // snack1/snack2: "charlie|snack1" etc
   if (meal === "snack1" || meal === "snack2") return `${person}|${meal}`;
   return person;
 }
 
 function recipeListForTag(recipes: Recipe[], tag: "breakfast" | "lunch" | "dinner" | "snack") {
   const tagged = recipes.filter((r) => hasTag(r, tag));
-  // If nothing is tagged yet, fall back to all recipes (better than an empty list)
   return tagged.length > 0 ? tagged : recipes;
 }
 
@@ -116,7 +113,7 @@ export default function PlanGridClient(props: {
     return m;
   }, [props.days]);
 
-  // Precomputed filtered lists for desktop datalists
+  // Desktop datalist sources (tag-filtered)
   const recipesDinner = useMemo(() => recipeListForTag(props.recipes, "dinner"), [props.recipes]);
   const recipesBreakfast = useMemo(
     () => recipeListForTag(props.recipes, "breakfast"),
@@ -125,38 +122,41 @@ export default function PlanGridClient(props: {
   const recipesLunch = useMemo(() => recipeListForTag(props.recipes, "lunch"), [props.recipes]);
   const recipesSnack = useMemo(() => recipeListForTag(props.recipes, "snack"), [props.recipes]);
 
-  // --- Compact mobile picker state (inline under the active field) ---
-  const [mobilePickerKey, setMobilePickerKey] = useState<string | null>(null);
-  const [mobilePickerQuery, setMobilePickerQuery] = useState<string>("");
+  // --- Mobile bottom-sheet picker (scrollable) ---
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetKey, setSheetKey] = useState<string>("");
+  const [sheetQuery, setSheetQuery] = useState<string>("");
 
-  const mobilePickerMeta = useMemo(() => {
-    if (!mobilePickerKey) return null;
-    // key format is always `${meal}|${person}|${dateOnly}`
-    const parts = mobilePickerKey.split("|");
+  const sheetMeta = useMemo(() => {
+    if (!sheetKey) return null;
+    const parts = sheetKey.split("|");
     if (parts.length !== 3) return null;
-    const meal = parts[0] as MealKey;
-    const person = parts[1] as PersonKey;
-    const dateOnly = parts[2] as string;
-    return { meal, person, dateOnly };
-  }, [mobilePickerKey]);
+    return { meal: parts[0] as MealKey, person: parts[1] as PersonKey, dateOnly: parts[2] as string };
+  }, [sheetKey]);
 
-  const mobilePickerOptions = useMemo(() => {
-    if (!mobilePickerMeta) return [];
-    const tag = mealTagForUiKey(mobilePickerMeta.meal);
-    const base = recipeListForTag(props.recipes, tag);
-    const q = normalise(mobilePickerQuery);
+  const sheetTag = useMemo(() => {
+    if (!sheetMeta) return "dinner" as const;
+    return mealTagForUiKey(sheetMeta.meal);
+  }, [sheetMeta]);
+
+  const sheetOptions = useMemo(() => {
+    if (!sheetMeta) return [];
+    const base = recipeListForTag(props.recipes, sheetTag);
+    const q = normalise(sheetQuery);
     const filtered = q ? base.filter((r) => normalise(r.name).includes(q)) : base;
-    return filtered.slice(0, 30);
-  }, [props.recipes, mobilePickerMeta, mobilePickerQuery]);
+    return filtered.slice(0, 60);
+  }, [props.recipes, sheetMeta, sheetQuery, sheetTag]);
 
-  function openMobilePicker(key: string) {
-    setMobilePickerKey(key);
-    setMobilePickerQuery("");
+  function openSheet(key: string) {
+    setSheetKey(key);
+    setSheetQuery("");
+    setSheetOpen(true);
   }
 
-  function closeMobilePicker() {
-    setMobilePickerKey(null);
-    setMobilePickerQuery("");
+  function closeSheet() {
+    setSheetOpen(false);
+    setSheetKey("");
+    setSheetQuery("");
   }
 
   function handlePerPersonChange(key: string, nextVal: string) {
@@ -245,12 +245,13 @@ export default function PlanGridClient(props: {
     }
   }
 
-  async function chooseMobileValue(chosen: string) {
-    if (!mobilePickerKey || !mobilePickerMeta) return;
+  async function chooseFromSheet(chosen: string) {
+    if (!sheetMeta) return;
 
-    const key = mobilePickerKey;
-    const { meal, person, dateOnly } = mobilePickerMeta;
+    const { meal, person, dateOnly } = sheetMeta;
+    const key = sheetKey;
 
+    // Update UI
     handlePerPersonChange(key, chosen);
 
     try {
@@ -278,82 +279,104 @@ export default function PlanGridClient(props: {
       alert(e?.message ?? "Failed to save");
     } finally {
       setSavingKey(null);
-      closeMobilePicker();
+      closeSheet();
     }
   }
 
-  function MobileInlinePicker() {
-    if (!mobilePickerKey || !mobilePickerMeta) return null;
+  const BottomSheet = () => {
+    if (!sheetOpen || !sheetMeta) return null;
 
-    const current = nameByKey[mobilePickerKey] ?? "";
-    const tag = mealTagForUiKey(mobilePickerMeta.meal);
+    const current = nameByKey[sheetKey] ?? "";
 
     return (
-      <div className="mt-2 rounded-lg border bg-white p-2">
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <div className="text-xs text-gray-500">
-            Filter: <span className="font-medium">{tag}</span>
-          </div>
-          <button
-            type="button"
-            onClick={closeMobilePicker}
-            className="text-xs underline text-gray-600"
-          >
-            Close
-          </button>
-        </div>
-
-        <input
-          value={mobilePickerQuery}
-          onChange={(e) => setMobilePickerQuery(e.target.value)}
-          placeholder="Search…"
-          className="w-full rounded border px-2 py-1 text-sm"
-          autoFocus
+      <div className="fixed inset-0 z-50 md:hidden">
+        {/* backdrop */}
+        <button
+          type="button"
+          className="absolute inset-0 bg-black/30"
+          onClick={closeSheet}
+          aria-label="Close picker"
         />
 
-        <div className="mt-2 flex gap-2 flex-wrap">
-          <button
-            type="button"
-            className="rounded border px-2 py-1 text-xs"
-            onClick={() => chooseMobileValue("Leftovers")}
-          >
-            Leftovers
-          </button>
+        {/* sheet */}
+        <div className="absolute left-0 right-0 bottom-0 bg-white rounded-t-2xl shadow-lg border-t">
+          <div className="p-3 border-b flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold truncate">
+                Pick {sheetMeta.meal === "snack1" || sheetMeta.meal === "snack2" ? "Snack" : sheetMeta.meal}
+              </div>
+              <div className="text-xs text-gray-500 truncate">
+                Filter: <span className="font-medium">{sheetTag}</span> · {sheetMeta.person} · {sheetMeta.dateOnly}
+              </div>
+            </div>
 
-          {current.trim() !== "" && (
-            <button
-              type="button"
-              className="rounded border px-2 py-1 text-xs text-gray-700"
-              onClick={() => chooseMobileValue("")}
-            >
-              Clear
+            <button type="button" onClick={closeSheet} className="rounded border px-3 py-2 text-sm">
+              Done
             </button>
-          )}
-        </div>
+          </div>
 
-        <div className="mt-2 max-h-44 overflow-auto rounded border">
-          {mobilePickerOptions.length === 0 ? (
-            <div className="p-2 text-sm text-gray-500">No matches.</div>
-          ) : (
-            mobilePickerOptions.map((r) => (
+          <div className="p-3 space-y-2">
+            <input
+              value={sheetQuery}
+              onChange={(e) => setSheetQuery(e.target.value)}
+              placeholder="Search…"
+              className="w-full rounded border px-3 py-2 text-sm"
+              autoFocus
+            />
+
+            <div className="flex gap-2 flex-wrap">
               <button
-                key={r.id}
                 type="button"
-                onClick={() => chooseMobileValue(r.name)}
-                className="w-full text-left px-2 py-2 border-b last:border-b-0 hover:bg-gray-50"
+                className="rounded border px-3 py-2 text-sm"
+                onClick={() => chooseFromSheet("Leftovers")}
               >
-                <div className="text-sm font-medium">{r.name}</div>
-                <div className="text-xs text-gray-500">Servings: {r.servings_default ?? "—"}</div>
+                Leftovers
               </button>
-            ))
-          )}
+
+              {current.trim() !== "" && (
+                <button
+                  type="button"
+                  className="rounded border px-3 py-2 text-sm text-gray-700"
+                  onClick={() => chooseFromSheet("")}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <div className="rounded-lg border overflow-hidden">
+              <div className="max-h-[45vh] overflow-auto">
+                {sheetOptions.length === 0 ? (
+                  <div className="p-3 text-sm text-gray-500">No matches.</div>
+                ) : (
+                  sheetOptions.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => chooseFromSheet(r.name)}
+                      className="w-full text-left px-3 py-3 border-b last:border-b-0 hover:bg-gray-50"
+                    >
+                      <div className="text-sm font-medium">{r.name}</div>
+                      <div className="text-xs text-gray-500">Servings: {r.servings_default ?? "—"}</div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="pb-2 text-xs text-gray-500">
+              Showing {Math.min(sheetOptions.length, 60)} results.
+            </div>
+          </div>
         </div>
       </div>
     );
-  }
+  };
 
   return (
     <>
+      <BottomSheet />
+
       {/* MOBILE */}
       <div className="block md:hidden space-y-4">
         {props.days.map((d) => {
@@ -371,25 +394,26 @@ export default function PlanGridClient(props: {
               </div>
 
               <div className="p-3 space-y-4">
-                {/* Dinner (mobile uses normal input; iOS datalist is poor but dinner is one field) */}
+                {/* Dinner: use same bottom sheet too (so iOS can scroll dinners) */}
                 <div className="space-y-1">
                   <div className="text-sm font-medium">Dinner</div>
-                  <input
-                    className={`w-full rounded border px-3 py-2 text-sm ${dinnerBg}`}
-                    list="dinner-recipes-list"
-                    value={dinnerVal}
-                    placeholder="Select recipe"
-                    onChange={(e) => setNameByKey((prev) => ({ ...prev, [dinnerKey]: e.target.value }))}
-                    onFocus={(e) => e.currentTarget.select()}
-                    onBlur={() => saveDinner(d.dateOnly)}
-                  />
+
+                  <button
+                    type="button"
+                    className={`w-full rounded border px-3 py-2 text-sm text-left ${dinnerBg}`}
+                    onClick={() => openSheet(dinnerKey)}
+                  >
+                    {dinnerVal ? dinnerVal : <span className="text-gray-400">Select recipe</span>}
+                  </button>
+
                   <div className="text-xs text-gray-500">{savingKey === dinnerKey ? "Saving…" : ""}</div>
+
                   {dinnerVal && !recipeNames.has(dinnerVal) && (
                     <div className="text-xs text-amber-700">Not in recipes list</div>
                   )}
                 </div>
 
-                {/* Per-person meals: tap-to-open compact inline picker */}
+                {/* Per-person meals (mobile uses bottom sheet) */}
                 {MEALS.filter((m) => m.perPerson).map((meal) => (
                   <div key={meal.key} className="space-y-2">
                     <div className="text-sm font-medium">{meal.label}</div>
@@ -402,8 +426,6 @@ export default function PlanGridClient(props: {
                         const isAutofilled = autofilledKeys.has(k);
                         const bg = cellBg(isEmpty, isAutofilled);
 
-                        const pickerOpenHere = mobilePickerKey === k;
-
                         return (
                           <div key={k} className="space-y-1">
                             <div className="text-xs text-gray-500">{p.label}</div>
@@ -411,14 +433,12 @@ export default function PlanGridClient(props: {
                             <button
                               type="button"
                               className={`w-full rounded border px-3 py-2 text-sm text-left ${bg}`}
-                              onClick={() => (pickerOpenHere ? closeMobilePicker() : openMobilePicker(k))}
+                              onClick={() => openSheet(k)}
                             >
                               {val ? val : <span className="text-gray-400">Select</span>}
                             </button>
 
                             <div className="text-xs text-gray-500">{savingKey === k ? "Saving…" : ""}</div>
-
-                            {pickerOpenHere && <MobileInlinePicker />}
 
                             {val && val !== "Leftovers" && !recipeNames.has(val) && (
                               <div className="text-xs text-amber-700">Not in recipes list</div>
@@ -433,13 +453,6 @@ export default function PlanGridClient(props: {
             </div>
           );
         })}
-
-        {/* Desktop-style datalists still exist; mobile per-person uses picker instead */}
-        <datalist id="dinner-recipes-list">
-          {recipesDinner.map((r) => (
-            <option key={r.id} value={r.name} />
-          ))}
-        </datalist>
       </div>
 
       {/* DESKTOP */}
@@ -493,7 +506,7 @@ export default function PlanGridClient(props: {
               ? "breakfast-recipes-list-desktop"
               : meal.key === "lunch"
               ? "lunch-recipes-list-desktop"
-              : "snack-recipes-list-desktop"; // snack1/snack2 both use snack
+              : "snack-recipes-list-desktop";
 
           return (
             <div key={meal.key} className="border-b last:border-b-0">
