@@ -72,7 +72,9 @@ export default function RecipeDetailPage() {
   const params = useParams<{ id: string }>();
   const recipeId = params.id;
 
-  const [loading, setLoading] = useState(true);
+  // Only for initial load (do NOT flip this during add/save/delete)
+  const [initialLoading, setInitialLoading] = useState(true);
+
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [items, setItems] = useState<RecipeItem[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -114,6 +116,16 @@ export default function RecipeDetailPage() {
     >
   >({});
 
+  // Mobile detection for ingredient-row wrapping
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const apply = () => setIsMobile(mq.matches);
+    apply();
+    mq.addEventListener?.("change", apply);
+    return () => mq.removeEventListener?.("change", apply);
+  }, []);
+
   const ingredientByLabel = useMemo(() => {
     const map = new Map<string, Ingredient>();
     for (const i of ingredients) {
@@ -124,7 +136,6 @@ export default function RecipeDetailPage() {
   }, [ingredients]);
 
   const ingredientOptions = useMemo(() => {
-    // Precompute labels and searchable strings once
     return ingredients.map((i) => {
       const label = `${i.name} (${i.category})`;
       const search = `${i.name} ${i.category}`.toLowerCase();
@@ -154,11 +165,7 @@ export default function RecipeDetailPage() {
 
   const filteredIngredientOptions = useMemo(() => {
     const q = norm(ingredientText);
-    const base = q
-      ? ingredientOptions.filter((o) => o.search.includes(q))
-      : ingredientOptions;
-
-    // Keep list snappy on mobile
+    const base = q ? ingredientOptions.filter((o) => o.search.includes(q)) : ingredientOptions;
     return base.slice(0, 50);
   }, [ingredientOptions, ingredientText]);
 
@@ -172,7 +179,6 @@ export default function RecipeDetailPage() {
 
   function scheduleClosePicker() {
     if (blurCloseTimer.current) window.clearTimeout(blurCloseTimer.current);
-    // small delay so clicks on options can register before blur closes it
     blurCloseTimer.current = window.setTimeout(() => {
       setIsPickerOpen(false);
       blurCloseTimer.current = null;
@@ -183,13 +189,14 @@ export default function RecipeDetailPage() {
     setIngredientText(label);
     setUnit(ing.default_unit || "each");
     setIsPickerOpen(false);
-    // keep focus pleasant
     requestAnimationFrame(() => ingredientInputRef.current?.focus());
   }
 
-  async function loadAll() {
-    setLoading(true);
-    setMessage(null);
+  async function fetchAll(soft: boolean) {
+    if (!soft) {
+      setInitialLoading(true);
+      setMessage(null);
+    }
 
     const { data: r, error: rErr } = await supabase
       .from("recipes")
@@ -199,12 +206,12 @@ export default function RecipeDetailPage() {
 
     if (rErr) {
       setMessage("Error loading recipe: " + rErr.message);
-      setLoading(false);
+      if (!soft) setInitialLoading(false);
       return;
     }
     if (!r) {
       setRecipe(null);
-      setLoading(false);
+      if (!soft) setInitialLoading(false);
       return;
     }
 
@@ -221,11 +228,10 @@ export default function RecipeDetailPage() {
 
     if (itErr) {
       setMessage("Error loading items: " + itErr.message);
-      setLoading(false);
+      if (!soft) setInitialLoading(false);
       return;
     }
 
-    // Supabase join can return ingredient as an array; normalise to a single object.
     const normalisedItems: RecipeItem[] = (it ?? []).map((row: any) => ({
       id: row.id,
       qty: row.qty,
@@ -244,9 +250,10 @@ export default function RecipeDetailPage() {
 
     if (ingErr) {
       setMessage("Error loading ingredients: " + ingErr.message);
-      setLoading(false);
+      if (!soft) setInitialLoading(false);
       return;
     }
+
     setIngredients((ing ?? []) as Ingredient[]);
 
     // Initialise edit state for current rows (don’t clobber existing edits)
@@ -262,18 +269,17 @@ export default function RecipeDetailPage() {
           };
         }
       }
-      // Remove edits for rows that no longer exist
       for (const key of Object.keys(next)) {
         if (!normalisedItems.some((x) => x.id === key)) delete next[key];
       }
       return next;
     });
 
-    setLoading(false);
+    if (!soft) setInitialLoading(false);
   }
 
   useEffect(() => {
-    loadAll();
+    fetchAll(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recipeId]);
 
@@ -305,11 +311,14 @@ export default function RecipeDetailPage() {
       return;
     }
 
+    // Keep user in place; do not flip page to "Loading…"
     setIngredientText("");
     setQty(1);
     setUnit("each");
-    await loadAll();
+
+    await fetchAll(true);
     setMessage("Added.");
+    requestAnimationFrame(() => ingredientInputRef.current?.focus());
   }
 
   async function addNewIngredientToHousehold() {
@@ -356,12 +365,13 @@ export default function RecipeDetailPage() {
       return;
     }
 
-    await loadAll();
+    await fetchAll(true);
 
     const label = `${inserted!.name} (${inserted!.category})`;
     setIngredientText(label);
     setUnit(inserted!.default_unit || "each");
     setMessage(`Added ingredient: ${inserted!.name}`);
+    requestAnimationFrame(() => ingredientInputRef.current?.focus());
   }
 
   async function saveRecipeInstructions() {
@@ -386,19 +396,11 @@ export default function RecipeDetailPage() {
     setMessage(null);
     setSavingTags(true);
 
-    // Store exactly as lowercase strings, multi-select allowed
     const cleaned = Array.from(
-      new Set(
-        mealTags
-          .map((t) => String(t).trim().toLowerCase())
-          .filter((t) => t.length > 0)
-      )
+      new Set(mealTags.map((t) => String(t).trim().toLowerCase()).filter((t) => t.length > 0))
     );
 
-    const { error } = await supabase
-      .from("recipes")
-      .update({ meal_tags: cleaned })
-      .eq("id", recipe.id);
+    const { error } = await supabase.from("recipes").update({ meal_tags: cleaned }).eq("id", recipe.id);
 
     setSavingTags(false);
 
@@ -444,7 +446,7 @@ export default function RecipeDetailPage() {
       return;
     }
 
-    await loadAll();
+    await fetchAll(true);
   }
 
   async function deleteRow(it: RecipeItem) {
@@ -458,7 +460,7 @@ export default function RecipeDetailPage() {
       return;
     }
 
-    await loadAll();
+    await fetchAll(true);
   }
 
   // Close picker when tapping outside
@@ -477,7 +479,7 @@ export default function RecipeDetailPage() {
     };
   }, [isPickerOpen]);
 
-  if (loading) return <div style={{ padding: 40 }}>Loading…</div>;
+  if (initialLoading) return <div style={{ padding: 40 }}>Loading…</div>;
   if (!recipe) return <div style={{ padding: 40 }}>Recipe not found.</div>;
 
   return (
@@ -487,9 +489,7 @@ export default function RecipeDetailPage() {
       </a>
 
       <h1 style={{ fontSize: 28, fontWeight: 700, marginTop: 10 }}>{recipe.name}</h1>
-      <div style={{ marginTop: 6, color: "#666" }}>
-        Default servings: {recipe.servings_default ?? "—"}
-      </div>
+      <div style={{ marginTop: 6, color: "#666" }}>Default servings: {recipe.servings_default ?? "—"}</div>
 
       <div style={{ marginTop: 14 }}>
         <AddToPlan recipeId={recipeId} />
@@ -522,6 +522,7 @@ export default function RecipeDetailPage() {
 
         <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
           <button
+            type="button"
             onClick={saveMealTags}
             disabled={savingTags}
             style={{
@@ -556,6 +557,7 @@ export default function RecipeDetailPage() {
 
         <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
           <button
+            type="button"
             onClick={saveRecipeInstructions}
             disabled={savingInstructions}
             style={{
@@ -578,7 +580,6 @@ export default function RecipeDetailPage() {
           <label>
             <div style={{ fontSize: 14, marginBottom: 6 }}>Ingredient (type to search)</div>
 
-            {/* Wrapper for inline dropdown */}
             <div style={{ position: "relative" }}>
               <input
                 ref={ingredientInputRef}
@@ -586,12 +587,8 @@ export default function RecipeDetailPage() {
                 onChange={(e) => {
                   const v = e.target.value;
                   setIngredientText(v);
-
-                  // If user types an exact label, keep unit in sync
                   const sel = ingredientByLabel.get(v);
                   if (sel) setUnit(sel.default_unit || "each");
-
-                  // keep dropdown usable
                   setIsPickerOpen(true);
                 }}
                 onFocus={() => openPicker()}
@@ -616,10 +613,9 @@ export default function RecipeDetailPage() {
                     overflowY: "auto",
                   }}
                 >
-                  {filteredIngredientOptions.map((opt) => (
+                  {filteredIngredientOptions.map((opt, i) => (
                     <div
                       key={opt.ingredient.id}
-                      // use onMouseDown so selection happens before input blur closes dropdown
                       onMouseDown={(e) => {
                         e.preventDefault();
                         selectIngredientOption(opt.label, opt.ingredient);
@@ -627,7 +623,7 @@ export default function RecipeDetailPage() {
                       style={{
                         padding: "10px 12px",
                         cursor: "pointer",
-                        borderTop: "1px solid #f2f2f2",
+                        borderTop: i === 0 ? "none" : "1px solid #f2f2f2",
                       }}
                     >
                       <div style={{ fontWeight: 600 }}>{opt.ingredient.name}</div>
@@ -651,12 +647,7 @@ export default function RecipeDetailPage() {
                   <select
                     value={newCategory}
                     onChange={(e) => setNewCategory(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: 10,
-                      border: "1px solid #ccc",
-                      borderRadius: 8,
-                    }}
+                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
                   >
                     {categories.map((c) => (
                       <option key={c} value={c}>
@@ -671,12 +662,7 @@ export default function RecipeDetailPage() {
                   <select
                     value={newDefaultUnit}
                     onChange={(e) => setNewDefaultUnit(e.target.value)}
-                    style={{
-                      width: "100%",
-                      padding: 10,
-                      border: "1px solid #ccc",
-                      borderRadius: 8,
-                    }}
+                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
                   >
                     {UNIT_OPTIONS.map((u) => (
                       <option key={u} value={u}>
@@ -687,6 +673,7 @@ export default function RecipeDetailPage() {
                 </label>
 
                 <button
+                  type="button"
                   onClick={addNewIngredientToHousehold}
                   disabled={addingIngredient}
                   style={{
@@ -734,6 +721,7 @@ export default function RecipeDetailPage() {
             </label>
 
             <button
+              type="button"
               onClick={addItem}
               style={{
                 padding: "10px 14px",
@@ -748,9 +736,7 @@ export default function RecipeDetailPage() {
             </button>
           </div>
 
-          {message && (
-            <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>
-          )}
+          {message && <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>}
         </div>
       </div>
 
@@ -775,11 +761,12 @@ export default function RecipeDetailPage() {
                   key={it.id}
                   style={{
                     display: "flex",
+                    flexDirection: isMobile ? "column" : "row",
                     justifyContent: "space-between",
-                    gap: 12,
+                    gap: isMobile ? 10 : 12,
                     padding: 12,
                     borderTop: idx === 0 ? "none" : "1px solid #eee",
-                    alignItems: "center",
+                    alignItems: isMobile ? "stretch" : "center",
                   }}
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -797,13 +784,19 @@ export default function RecipeDetailPage() {
                       {it.ingredient?.category ?? ""}
                     </div>
                     {ed.error ? (
-                      <div style={{ fontSize: 12, color: "#b00020", marginTop: 6 }}>
-                        {ed.error}
-                      </div>
+                      <div style={{ fontSize: 12, color: "#b00020", marginTop: 6 }}>{ed.error}</div>
                     ) : null}
                   </div>
 
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      justifyContent: isMobile ? "flex-start" : "flex-end",
+                    }}
+                  >
                     <input
                       type="number"
                       step="0.1"
@@ -811,7 +804,8 @@ export default function RecipeDetailPage() {
                       value={ed.qty}
                       onChange={(e) => patchEditRow(it.id, { qty: e.target.value, error: null })}
                       style={{
-                        width: 90,
+                        width: isMobile ? "48%" : 90,
+                        minWidth: isMobile ? 120 : 90,
                         padding: 8,
                         border: "1px solid #ccc",
                         borderRadius: 8,
@@ -822,7 +816,13 @@ export default function RecipeDetailPage() {
                     <select
                       value={ed.unit}
                       onChange={(e) => patchEditRow(it.id, { unit: e.target.value, error: null })}
-                      style={{ width: 110, padding: 8, border: "1px solid #ccc", borderRadius: 8 }}
+                      style={{
+                        width: isMobile ? "48%" : 110,
+                        minWidth: isMobile ? 140 : 110,
+                        padding: 8,
+                        border: "1px solid #ccc",
+                        borderRadius: 8,
+                      }}
                     >
                       {UNIT_OPTIONS.map((u) => (
                         <option key={u} value={u}>
@@ -832,6 +832,7 @@ export default function RecipeDetailPage() {
                     </select>
 
                     <button
+                      type="button"
                       onClick={() => saveRow(it)}
                       disabled={ed.saving}
                       style={{
@@ -839,13 +840,14 @@ export default function RecipeDetailPage() {
                         borderRadius: 10,
                         border: "1px solid #333",
                         background: ed.saving ? "#eee" : "#fff",
-                        minWidth: 70,
+                        minWidth: isMobile ? "48%" : 70,
                       }}
                     >
                       {ed.saving ? "Saving…" : "Save"}
                     </button>
 
                     <button
+                      type="button"
                       onClick={() => deleteRow(it)}
                       style={{
                         padding: "8px 10px",
@@ -853,6 +855,7 @@ export default function RecipeDetailPage() {
                         border: "1px solid #ccc",
                         background: "#fff",
                         color: "#666",
+                        minWidth: isMobile ? "48%" : undefined,
                       }}
                       title="Remove this line"
                     >
