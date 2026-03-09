@@ -7,10 +7,12 @@ import AddToPlan from "./AddToPlan";
 
 type Recipe = {
   id: string;
+  household_id: string;
   name: string;
   servings_default: number | null;
   instructions: string | null;
   meal_tags: string[] | null;
+  is_public: boolean;
 };
 
 type Ingredient = {
@@ -73,44 +75,38 @@ export default function RecipeDetailPage() {
   const router = useRouter();
   const recipeId = params.id;
 
-  // Only for initial load (do NOT flip this during add/save/delete)
   const [initialLoading, setInitialLoading] = useState(true);
 
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [items, setItems] = useState<RecipeItem[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
+  const [myHouseholdId, setMyHouseholdId] = useState<string | null>(null);
 
-  // Recipe meta editing
   const [recipeName, setRecipeName] = useState("");
   const [recipeServings, setRecipeServings] = useState<number>(2);
+  const [isPublic, setIsPublic] = useState(false);
   const [savingMeta, setSavingMeta] = useState(false);
   const [deletingRecipe, setDeletingRecipe] = useState(false);
 
-  // Add-line state
   const [ingredientText, setIngredientText] = useState<string>("");
   const [qty, setQty] = useState<number>(1);
   const [unit, setUnit] = useState<string>("each");
   const [message, setMessage] = useState<string | null>(null);
 
-  // Inline dropdown state (replaces <datalist>)
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const ingredientInputRef = useRef<HTMLInputElement | null>(null);
   const blurCloseTimer = useRef<number | null>(null);
 
-  // Inline add-new-ingredient state
   const [addingIngredient, setAddingIngredient] = useState(false);
   const [newCategory, setNewCategory] = useState("Other");
   const [newDefaultUnit, setNewDefaultUnit] = useState("each");
 
-  // Instructions editor
   const [instructions, setInstructions] = useState("");
   const [savingInstructions, setSavingInstructions] = useState(false);
 
-  // Meal tags editor
   const [mealTags, setMealTags] = useState<string[]>([]);
   const [savingTags, setSavingTags] = useState(false);
 
-  // Per-row edit state
   const [editById, setEditById] = useState<
     Record<
       string,
@@ -123,7 +119,6 @@ export default function RecipeDetailPage() {
     >
   >({});
 
-  // Mobile detection for ingredient-row wrapping
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 768px)");
@@ -132,6 +127,8 @@ export default function RecipeDetailPage() {
     mq.addEventListener?.("change", apply);
     return () => mq.removeEventListener?.("change", apply);
   }, []);
+
+  const isOwner = !!recipe && !!myHouseholdId && recipe.household_id === myHouseholdId;
 
   const ingredientByLabel = useMemo(() => {
     const map = new Map<string, Ingredient>();
@@ -205,9 +202,19 @@ export default function RecipeDetailPage() {
       setMessage(null);
     }
 
+    const { data: membership, error: memErr } = await supabase
+      .from("household_members")
+      .select("household_id")
+      .limit(1)
+      .maybeSingle();
+
+    if (!memErr) {
+      setMyHouseholdId(membership?.household_id ?? null);
+    }
+
     const { data: r, error: rErr } = await supabase
       .from("recipes")
-      .select("id,name,servings_default,instructions,meal_tags")
+      .select("id,household_id,name,servings_default,instructions,meal_tags,is_public")
       .eq("id", recipeId)
       .maybeSingle();
 
@@ -224,10 +231,11 @@ export default function RecipeDetailPage() {
 
     const rec = r as Recipe;
     setRecipe(rec);
-    setInstructions((rec.instructions ?? "") as string);
-    setMealTags(((rec.meal_tags ?? []) as string[]) ?? []);
+    setInstructions(rec.instructions ?? "");
+    setMealTags((rec.meal_tags ?? []) as string[]);
     setRecipeName(rec.name ?? "");
     setRecipeServings(Number(rec.servings_default ?? 2));
+    setIsPublic(!!rec.is_public);
 
     const { data: it, error: itErr } = await supabase
       .from("recipe_items")
@@ -265,7 +273,6 @@ export default function RecipeDetailPage() {
 
     setIngredients((ing ?? []) as Ingredient[]);
 
-    // Initialise edit state for current rows (don’t clobber existing edits)
     setEditById((prev) => {
       const next = { ...prev };
       for (const row of normalisedItems) {
@@ -293,7 +300,7 @@ export default function RecipeDetailPage() {
   }, [recipeId]);
 
   async function saveRecipeMeta() {
-    if (!recipe) return;
+    if (!recipe || !isOwner) return;
     setMessage(null);
 
     const nextName = recipeName.trim();
@@ -312,7 +319,11 @@ export default function RecipeDetailPage() {
 
     const { error } = await supabase
       .from("recipes")
-      .update({ name: nextName, servings_default: nextServ })
+      .update({
+        name: nextName,
+        servings_default: nextServ,
+        is_public: isPublic,
+      })
       .eq("id", recipe.id);
 
     setSavingMeta(false);
@@ -327,7 +338,7 @@ export default function RecipeDetailPage() {
   }
 
   async function deleteRecipe() {
-    if (!recipe) return;
+    if (!recipe || !isOwner) return;
 
     const ok = confirm(
       `Delete recipe "${recipe.name}"?\n\nThis will also remove all its ingredient lines.`
@@ -337,8 +348,10 @@ export default function RecipeDetailPage() {
     setMessage(null);
     setDeletingRecipe(true);
 
-    // 1) delete recipe_items
-    const { error: delItemsErr } = await supabase.from("recipe_items").delete().eq("recipe_id", recipe.id);
+    const { error: delItemsErr } = await supabase
+      .from("recipe_items")
+      .delete()
+      .eq("recipe_id", recipe.id);
 
     if (delItemsErr) {
       setDeletingRecipe(false);
@@ -346,8 +359,10 @@ export default function RecipeDetailPage() {
       return;
     }
 
-    // 2) delete recipe
-    const { error: delRecipeErr } = await supabase.from("recipes").delete().eq("id", recipe.id);
+    const { error: delRecipeErr } = await supabase
+      .from("recipes")
+      .delete()
+      .eq("id", recipe.id);
 
     setDeletingRecipe(false);
 
@@ -360,6 +375,7 @@ export default function RecipeDetailPage() {
   }
 
   async function addItem() {
+    if (!isOwner) return;
     setMessage(null);
 
     const sel = ingredientByLabel.get(ingredientText);
@@ -397,6 +413,7 @@ export default function RecipeDetailPage() {
   }
 
   async function addNewIngredientToHousehold() {
+    if (!isOwner) return;
     setMessage(null);
 
     const name = normaliseName(typedName);
@@ -450,11 +467,14 @@ export default function RecipeDetailPage() {
   }
 
   async function saveRecipeInstructions() {
-    if (!recipe) return;
+    if (!recipe || !isOwner) return;
     setMessage(null);
     setSavingInstructions(true);
 
-    const { error } = await supabase.from("recipes").update({ instructions }).eq("id", recipe.id);
+    const { error } = await supabase
+      .from("recipes")
+      .update({ instructions })
+      .eq("id", recipe.id);
 
     setSavingInstructions(false);
 
@@ -467,16 +487,12 @@ export default function RecipeDetailPage() {
   }
 
   async function saveMealTags() {
-    if (!recipe) return;
+    if (!recipe || !isOwner) return;
     setMessage(null);
     setSavingTags(true);
 
     const cleaned = Array.from(
-      new Set(
-        mealTags
-          .map((t) => String(t).trim().toLowerCase())
-          .filter((t) => t.length > 0)
-      )
+      new Set(mealTags.map((t) => String(t).trim().toLowerCase()).filter((t) => t.length > 0))
     );
 
     const { error } = await supabase
@@ -505,6 +521,8 @@ export default function RecipeDetailPage() {
   }
 
   async function saveRow(it: RecipeItem) {
+    if (!isOwner) return;
+
     const ed = editById[it.id];
     if (!ed) return;
 
@@ -532,6 +550,8 @@ export default function RecipeDetailPage() {
   }
 
   async function deleteRow(it: RecipeItem) {
+    if (!isOwner) return;
+
     const ok = confirm(`Remove "${it.ingredient?.name ?? "this item"}" from the recipe?`);
     if (!ok) return;
 
@@ -545,7 +565,6 @@ export default function RecipeDetailPage() {
     await fetchAll(true);
   }
 
-  // Close picker when tapping outside
   useEffect(() => {
     function onDocDown(e: MouseEvent | TouchEvent) {
       if (!isPickerOpen) return;
@@ -570,7 +589,6 @@ export default function RecipeDetailPage() {
         ← Back to recipes
       </a>
 
-      {/* Title + default servings + delete */}
       <div
         style={{
           marginTop: 10,
@@ -579,79 +597,124 @@ export default function RecipeDetailPage() {
           borderRadius: 12,
         }}
       >
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
-          <label style={{ flex: "1 1 320px" }}>
-            <div style={{ fontSize: 14, marginBottom: 6 }}>Recipe name</div>
-            <input
-              value={recipeName}
-              onChange={(e) => setRecipeName(e.target.value)}
+        {isOwner ? (
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+            <label style={{ flex: "1 1 320px" }}>
+              <div style={{ fontSize: 14, marginBottom: 6 }}>Recipe name</div>
+              <input
+                value={recipeName}
+                onChange={(e) => setRecipeName(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 10,
+                  border: "1px solid #ccc",
+                  borderRadius: 8,
+                  fontWeight: 700,
+                }}
+              />
+            </label>
+
+            <label style={{ flex: "0 0 180px" }}>
+              <div style={{ fontSize: 14, marginBottom: 6 }}>Default servings</div>
+              <input
+                type="number"
+                min={1}
+                value={recipeServings}
+                onChange={(e) => setRecipeServings(Number(e.target.value))}
+                style={{
+                  width: "100%",
+                  padding: 10,
+                  border: "1px solid #ccc",
+                  borderRadius: 8,
+                }}
+              />
+            </label>
+
+            <label
               style={{
-                width: "100%",
-                padding: 10,
-                border: "1px solid #ccc",
-                borderRadius: 8,
-                fontWeight: 700,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                minHeight: 42,
+                paddingBottom: 8,
               }}
-            />
-          </label>
+            >
+              <input
+                type="checkbox"
+                checked={isPublic}
+                onChange={(e) => setIsPublic(e.target.checked)}
+              />
+              <span style={{ fontSize: 14 }}>Public recipe</span>
+            </label>
 
-          <label style={{ flex: "0 0 180px" }}>
-            <div style={{ fontSize: 14, marginBottom: 6 }}>Default servings</div>
-            <input
-              type="number"
-              min={1}
-              value={recipeServings}
-              onChange={(e) => setRecipeServings(Number(e.target.value))}
+            <button
+              type="button"
+              onClick={saveRecipeMeta}
+              disabled={savingMeta || deletingRecipe}
               style={{
-                width: "100%",
-                padding: 10,
-                border: "1px solid #ccc",
-                borderRadius: 8,
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: "1px solid #333",
+                width: 180,
+                background: savingMeta ? "#eee" : "#fff",
+                height: 42,
               }}
-            />
-          </label>
+            >
+              {savingMeta ? "Saving…" : "Save recipe"}
+            </button>
 
-          <button
-            type="button"
-            onClick={saveRecipeMeta}
-            disabled={savingMeta || deletingRecipe}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 10,
-              border: "1px solid #333",
-              width: 180,
-              background: savingMeta ? "#eee" : "#fff",
-              height: 42,
-            }}
-          >
-            {savingMeta ? "Saving…" : "Save recipe"}
-          </button>
-
-          <button
-            type="button"
-            onClick={deleteRecipe}
-            disabled={deletingRecipe || savingMeta}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 10,
-              border: "1px solid #c33",
-              color: "#c33",
-              width: 160,
-              background: deletingRecipe ? "#fee" : "#fff",
-              height: 42,
-            }}
-            title="Delete this recipe"
-          >
-            {deletingRecipe ? "Deleting…" : "Delete"}
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={deleteRecipe}
+              disabled={deletingRecipe || savingMeta}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: "1px solid #c33",
+                color: "#c33",
+                width: 160,
+                background: deletingRecipe ? "#fee" : "#fff",
+                height: 42,
+              }}
+              title="Delete this recipe"
+            >
+              {deletingRecipe ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        ) : (
+          <div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <h1 style={{ fontSize: 28, fontWeight: 700, margin: 0 }}>{recipe.name}</h1>
+              {recipe.is_public && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: "#555",
+                    background: "#f3f3f3",
+                    border: "1px solid #ddd",
+                    borderRadius: 999,
+                    padding: "2px 8px",
+                  }}
+                >
+                  Public
+                </span>
+              )}
+            </div>
+            <div style={{ marginTop: 6, color: "#666" }}>
+              Default servings: {recipe.servings_default ?? "—"}
+            </div>
+            <div style={{ marginTop: 8, fontSize: 13, color: "#666" }}>
+              Read-only public recipe
+            </div>
+          </div>
+        )}
       </div>
 
       <div style={{ marginTop: 14 }}>
         <AddToPlan recipeId={recipeId} />
       </div>
 
-      {/* Meal tags */}
       <div style={{ marginTop: 22, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Meal tags</h2>
 
@@ -659,10 +722,11 @@ export default function RecipeDetailPage() {
           {TAG_OPTIONS.map((t) => {
             const checked = mealTags.includes(t);
             return (
-              <label key={t} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <label key={t} style={{ display: "flex", alignItems: "center", gap: 8, opacity: isOwner ? 1 : 0.7 }}>
                 <input
                   type="checkbox"
                   checked={checked}
+                  disabled={!isOwner}
                   onChange={(e) => {
                     const next = e.target.checked
                       ? Array.from(new Set([...mealTags, t]))
@@ -676,25 +740,26 @@ export default function RecipeDetailPage() {
           })}
         </div>
 
-        <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
-          <button
-            type="button"
-            onClick={saveMealTags}
-            disabled={savingTags}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 10,
-              border: "1px solid #333",
-              width: 180,
-              background: savingTags ? "#eee" : "#fff",
-            }}
-          >
-            {savingTags ? "Saving…" : "Save tags"}
-          </button>
-        </div>
+        {isOwner && (
+          <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
+            <button
+              type="button"
+              onClick={saveMealTags}
+              disabled={savingTags}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: "1px solid #333",
+                width: 180,
+                background: savingTags ? "#eee" : "#fff",
+              }}
+            >
+              {savingTags ? "Saving…" : "Save tags"}
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Instructions */}
       <div style={{ marginTop: 22, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Instructions</h2>
 
@@ -703,202 +768,206 @@ export default function RecipeDetailPage() {
           onChange={(e) => setInstructions(e.target.value)}
           placeholder="Write the method here…"
           rows={10}
+          readOnly={!isOwner}
           style={{
             width: "100%",
             padding: 10,
             border: "1px solid #ccc",
             borderRadius: 8,
             fontFamily: "inherit",
+            background: isOwner ? "#fff" : "#fafafa",
           }}
         />
 
-        <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
-          <button
-            type="button"
-            onClick={saveRecipeInstructions}
-            disabled={savingInstructions}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 10,
-              border: "1px solid #333",
-              width: 180,
-              background: savingInstructions ? "#eee" : "#fff",
-            }}
-          >
-            {savingInstructions ? "Saving…" : "Save instructions"}
-          </button>
-        </div>
-      </div>
-
-      {/* Add ingredient line */}
-      <div style={{ marginTop: 22, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Add ingredient line</h2>
-
-        <div style={{ display: "grid", gap: 10 }}>
-          <label>
-            <div style={{ fontSize: 14, marginBottom: 6 }}>Ingredient (type to search)</div>
-
-            <div style={{ position: "relative" }}>
-              <input
-                ref={ingredientInputRef}
-                value={ingredientText}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setIngredientText(v);
-                  const sel = ingredientByLabel.get(v);
-                  if (sel) setUnit(sel.default_unit || "each");
-                  setIsPickerOpen(true);
-                }}
-                onFocus={() => openPicker()}
-                onBlur={() => scheduleClosePicker()}
-                placeholder="Search ingredients (e.g. onion)…"
-                style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
-              />
-
-              {isPickerOpen && filteredIngredientOptions.length > 0 && (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: "calc(100% + 6px)",
-                    left: 0,
-                    right: 0,
-                    zIndex: 50,
-                    background: "#fff",
-                    border: "1px solid #ddd",
-                    borderRadius: 10,
-                    boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
-                    maxHeight: 260,
-                    overflowY: "auto",
-                  }}
-                >
-                  {filteredIngredientOptions.map((opt, i) => (
-                    <div
-                      key={opt.ingredient.id}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        selectIngredientOption(opt.label, opt.ingredient);
-                      }}
-                      style={{
-                        padding: "10px 12px",
-                        cursor: "pointer",
-                        borderTop: i === 0 ? "none" : "1px solid #f2f2f2",
-                      }}
-                    >
-                      <div style={{ fontWeight: 600 }}>{opt.ingredient.name}</div>
-                      <div style={{ fontSize: 12, color: "#666" }}>{opt.ingredient.category}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </label>
-
-          {showAddIngredientPanel && (
-            <div style={{ padding: 12, border: "1px dashed #bbb", borderRadius: 10 }}>
-              <div style={{ fontWeight: 600, marginBottom: 8 }}>
-                Not found: <span style={{ fontFamily: "monospace" }}>{typedName}</span>
-              </div>
-
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <label style={{ flex: "1 1 240px" }}>
-                  <div style={{ fontSize: 14, marginBottom: 6 }}>Category</div>
-                  <select
-                    value={newCategory}
-                    onChange={(e) => setNewCategory(e.target.value)}
-                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
-                  >
-                    {categories.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label style={{ flex: "0 0 160px" }}>
-                  <div style={{ fontSize: 14, marginBottom: 6 }}>Default unit</div>
-                  <select
-                    value={newDefaultUnit}
-                    onChange={(e) => setNewDefaultUnit(e.target.value)}
-                    style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
-                  >
-                    {UNIT_OPTIONS.map((u) => (
-                      <option key={u} value={u}>
-                        {u}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <button
-                  type="button"
-                  onClick={addNewIngredientToHousehold}
-                  disabled={addingIngredient}
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: 10,
-                    border: "1px solid #333",
-                    width: 220,
-                    height: 42,
-                    alignSelf: "end",
-                    background: addingIngredient ? "#eee" : "#fff",
-                  }}
-                >
-                  {addingIngredient ? "Adding…" : `Add "${typedName}"`}
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <label style={{ flex: "0 0 160px" }}>
-              <div style={{ fontSize: 14, marginBottom: 6 }}>Qty</div>
-              <input
-                type="number"
-                step="0.1"
-                min="0"
-                value={qty}
-                onChange={(e) => setQty(Number(e.target.value))}
-                style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
-              />
-            </label>
-
-            <label style={{ flex: "0 0 160px" }}>
-              <div style={{ fontSize: 14, marginBottom: 6 }}>Unit</div>
-              <select
-                value={unit}
-                onChange={(e) => setUnit(e.target.value)}
-                style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
-              >
-                {UNIT_OPTIONS.map((u) => (
-                  <option key={u} value={u}>
-                    {u}
-                  </option>
-                ))}
-              </select>
-            </label>
-
+        {isOwner && (
+          <div style={{ marginTop: 10, display: "flex", gap: 10 }}>
             <button
               type="button"
-              onClick={addItem}
+              onClick={saveRecipeInstructions}
+              disabled={savingInstructions}
               style={{
                 padding: "10px 14px",
                 borderRadius: 10,
                 border: "1px solid #333",
-                width: 160,
-                height: 42,
-                alignSelf: "end",
+                width: 180,
+                background: savingInstructions ? "#eee" : "#fff",
               }}
             >
-              Add line
+              {savingInstructions ? "Saving…" : "Save instructions"}
             </button>
           </div>
-
-          {message && <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>}
-        </div>
+        )}
       </div>
 
-      {/* Ingredient rows */}
+      {isOwner && (
+        <div style={{ marginTop: 22, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Add ingredient line</h2>
+
+          <div style={{ display: "grid", gap: 10 }}>
+            <label>
+              <div style={{ fontSize: 14, marginBottom: 6 }}>Ingredient (type to search)</div>
+
+              <div style={{ position: "relative" }}>
+                <input
+                  ref={ingredientInputRef}
+                  value={ingredientText}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setIngredientText(v);
+                    const sel = ingredientByLabel.get(v);
+                    if (sel) setUnit(sel.default_unit || "each");
+                    setIsPickerOpen(true);
+                  }}
+                  onFocus={() => openPicker()}
+                  onBlur={() => scheduleClosePicker()}
+                  placeholder="Search ingredients (e.g. onion)…"
+                  style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+                />
+
+                {isPickerOpen && filteredIngredientOptions.length > 0 && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "calc(100% + 6px)",
+                      left: 0,
+                      right: 0,
+                      zIndex: 50,
+                      background: "#fff",
+                      border: "1px solid #ddd",
+                      borderRadius: 10,
+                      boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
+                      maxHeight: 260,
+                      overflowY: "auto",
+                    }}
+                  >
+                    {filteredIngredientOptions.map((opt, i) => (
+                      <div
+                        key={opt.ingredient.id}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          selectIngredientOption(opt.label, opt.ingredient);
+                        }}
+                        style={{
+                          padding: "10px 12px",
+                          cursor: "pointer",
+                          borderTop: i === 0 ? "none" : "1px solid #f2f2f2",
+                        }}
+                      >
+                        <div style={{ fontWeight: 600 }}>{opt.ingredient.name}</div>
+                        <div style={{ fontSize: 12, color: "#666" }}>{opt.ingredient.category}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </label>
+
+            {showAddIngredientPanel && (
+              <div style={{ padding: 12, border: "1px dashed #bbb", borderRadius: 10 }}>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                  Not found: <span style={{ fontFamily: "monospace" }}>{typedName}</span>
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <label style={{ flex: "1 1 240px" }}>
+                    <div style={{ fontSize: 14, marginBottom: 6 }}>Category</div>
+                    <select
+                      value={newCategory}
+                      onChange={(e) => setNewCategory(e.target.value)}
+                      style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+                    >
+                      {categories.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label style={{ flex: "0 0 160px" }}>
+                    <div style={{ fontSize: 14, marginBottom: 6 }}>Default unit</div>
+                    <select
+                      value={newDefaultUnit}
+                      onChange={(e) => setNewDefaultUnit(e.target.value)}
+                      style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+                    >
+                      {UNIT_OPTIONS.map((u) => (
+                        <option key={u} value={u}>
+                          {u}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={addNewIngredientToHousehold}
+                    disabled={addingIngredient}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 10,
+                      border: "1px solid #333",
+                      width: 220,
+                      height: 42,
+                      alignSelf: "end",
+                      background: addingIngredient ? "#eee" : "#fff",
+                    }}
+                  >
+                    {addingIngredient ? "Adding…" : `Add "${typedName}"`}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <label style={{ flex: "0 0 160px" }}>
+                <div style={{ fontSize: 14, marginBottom: 6 }}>Qty</div>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={qty}
+                  onChange={(e) => setQty(Number(e.target.value))}
+                  style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+                />
+              </label>
+
+              <label style={{ flex: "0 0 160px" }}>
+                <div style={{ fontSize: 14, marginBottom: 6 }}>Unit</div>
+                <select
+                  value={unit}
+                  onChange={(e) => setUnit(e.target.value)}
+                  style={{ width: "100%", padding: 10, border: "1px solid #ccc", borderRadius: 8 }}
+                >
+                  {UNIT_OPTIONS.map((u) => (
+                    <option key={u} value={u}>
+                      {u}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <button
+                type="button"
+                onClick={addItem}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  border: "1px solid #333",
+                  width: 160,
+                  height: 42,
+                  alignSelf: "end",
+                }}
+              >
+                Add line
+              </button>
+            </div>
+
+            {message && <div style={{ padding: 12, background: "#f5f5f5", borderRadius: 10 }}>{message}</div>}
+          </div>
+        </div>
+      )}
+
       <div style={{ marginTop: 22 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 10 }}>Ingredients</h2>
 
@@ -947,86 +1016,98 @@ export default function RecipeDetailPage() {
                     ) : null}
                   </div>
 
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 8,
-                      alignItems: "center",
-                      flexWrap: "wrap",
-                      justifyContent: isMobile ? "flex-start" : "flex-end",
-                    }}
-                  >
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      value={ed.qty}
-                      onChange={(e) => patchEditRow(it.id, { qty: e.target.value, error: null })}
+                  {isOwner ? (
+                    <div
                       style={{
-                        width: isMobile ? "48%" : 90,
-                        minWidth: isMobile ? 120 : 90,
-                        padding: 8,
-                        border: "1px solid #ccc",
-                        borderRadius: 8,
-                        textAlign: "right",
-                      }}
-                    />
-
-                    <select
-                      value={ed.unit}
-                      onChange={(e) => patchEditRow(it.id, { unit: e.target.value, error: null })}
-                      style={{
-                        width: isMobile ? "48%" : 110,
-                        minWidth: isMobile ? 140 : 110,
-                        padding: 8,
-                        border: "1px solid #ccc",
-                        borderRadius: 8,
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        justifyContent: isMobile ? "flex-start" : "flex-end",
                       }}
                     >
-                      {UNIT_OPTIONS.map((u) => (
-                        <option key={u} value={u}>
-                          {u}
-                        </option>
-                      ))}
-                    </select>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        value={ed.qty}
+                        onChange={(e) => patchEditRow(it.id, { qty: e.target.value, error: null })}
+                        style={{
+                          width: isMobile ? "48%" : 90,
+                          minWidth: isMobile ? 120 : 90,
+                          padding: 8,
+                          border: "1px solid #ccc",
+                          borderRadius: 8,
+                          textAlign: "right",
+                        }}
+                      />
 
-                    <button
-                      type="button"
-                      onClick={() => saveRow(it)}
-                      disabled={ed.saving}
-                      style={{
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid #333",
-                        background: ed.saving ? "#eee" : "#fff",
-                        minWidth: isMobile ? "48%" : 70,
-                      }}
-                    >
-                      {ed.saving ? "Saving…" : "Save"}
-                    </button>
+                      <select
+                        value={ed.unit}
+                        onChange={(e) => patchEditRow(it.id, { unit: e.target.value, error: null })}
+                        style={{
+                          width: isMobile ? "48%" : 110,
+                          minWidth: isMobile ? 140 : 110,
+                          padding: 8,
+                          border: "1px solid #ccc",
+                          borderRadius: 8,
+                        }}
+                      >
+                        {UNIT_OPTIONS.map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                      </select>
 
-                    <button
-                      type="button"
-                      onClick={() => deleteRow(it)}
-                      style={{
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid #ccc",
-                        background: "#fff",
-                        color: "#666",
-                        minWidth: isMobile ? "48%" : undefined,
-                      }}
-                      title="Remove this line"
-                    >
-                      Delete
-                    </button>
-                  </div>
+                      <button
+                        type="button"
+                        onClick={() => saveRow(it)}
+                        disabled={ed.saving}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 10,
+                          border: "1px solid #333",
+                          background: ed.saving ? "#eee" : "#fff",
+                          minWidth: isMobile ? "48%" : 70,
+                        }}
+                      >
+                        {ed.saving ? "Saving…" : "Save"}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => deleteRow(it)}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 10,
+                          border: "1px solid #ccc",
+                          background: "#fff",
+                          color: "#666",
+                          minWidth: isMobile ? "48%" : undefined,
+                        }}
+                        title="Remove this line"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 14, color: "#555" }}>
+                      {it.qty} {it.unit}
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
         )}
       </div>
+
+      {!isOwner && message && (
+        <div style={{ marginTop: 16, padding: 12, background: "#f5f5f5", borderRadius: 10 }}>
+          {message}
+        </div>
+      )}
     </div>
   );
 }
