@@ -20,6 +20,8 @@ type Ingredient = {
   name: string;
   category: string;
   default_unit: string;
+  household_id?: string | null;
+  is_global?: boolean | null;
 };
 
 type RecipeItem = {
@@ -87,6 +89,7 @@ export default function RecipeDetailPage() {
   const [isPublic, setIsPublic] = useState(false);
   const [savingMeta, setSavingMeta] = useState(false);
   const [deletingRecipe, setDeletingRecipe] = useState(false);
+  const [importingRecipe, setImportingRecipe] = useState(false);
 
   const [ingredientText, setIngredientText] = useState<string>("");
   const [qty, setQty] = useState<number>(1);
@@ -127,8 +130,6 @@ export default function RecipeDetailPage() {
     mq.addEventListener?.("change", apply);
     return () => mq.removeEventListener?.("change", apply);
   }, []);
-
-  const isOwner = !!recipe && !!myHouseholdId && recipe.household_id === myHouseholdId;
 
   const ingredientByLabel = useMemo(() => {
     const map = new Map<string, Ingredient>();
@@ -172,6 +173,8 @@ export default function RecipeDetailPage() {
     const base = q ? ingredientOptions.filter((o) => o.search.includes(q)) : ingredientOptions;
     return base.slice(0, 50);
   }, [ingredientOptions, ingredientText]);
+
+  const isOwner = !!recipe && !!myHouseholdId && recipe.household_id === myHouseholdId;
 
   function openPicker() {
     if (blurCloseTimer.current) {
@@ -261,7 +264,7 @@ export default function RecipeDetailPage() {
 
     const { data: ing, error: ingErr } = await supabase
       .from("ingredients")
-      .select("id,name,category,default_unit")
+      .select("id,name,category,default_unit,household_id,is_global")
       .order("category", { ascending: true })
       .order("name", { ascending: true });
 
@@ -372,6 +375,92 @@ export default function RecipeDetailPage() {
     }
 
     router.push("/recipes");
+  }
+
+  async function importRecipe() {
+    if (!recipe || !myHouseholdId || isOwner) return;
+
+    setMessage(null);
+    setImportingRecipe(true);
+
+    try {
+      const importedName = `${recipe.name} (Imported)`;
+
+      const { data: newRecipe, error: newRecipeErr } = await supabase
+        .from("recipes")
+        .insert({
+          household_id: myHouseholdId,
+          name: importedName,
+          servings_default: recipe.servings_default,
+          instructions: recipe.instructions ?? "",
+          meal_tags: recipe.meal_tags ?? [],
+          is_public: false,
+        })
+        .select("id")
+        .single();
+
+      if (newRecipeErr || !newRecipe?.id) {
+        throw new Error(newRecipeErr?.message ?? "Failed to create imported recipe");
+      }
+
+      const ingredientIdMap = new Map<string, string>();
+
+      for (const item of items) {
+        const ing = item.ingredient;
+        if (!ing) continue;
+
+        const existing = ingredients.find(
+          (x) =>
+            norm(x.name) === norm(ing.name) &&
+            norm(x.category) === norm(ing.category) &&
+            x.household_id === myHouseholdId
+        );
+
+        if (existing?.id) {
+          ingredientIdMap.set(item.ingredient_id, existing.id);
+          continue;
+        }
+
+        const created = await supabase
+          .from("ingredients")
+          .insert({
+            household_id: myHouseholdId,
+            is_global: false,
+            name: ing.name,
+            category: ing.category || "Other",
+            default_unit: "each",
+          })
+          .select("id")
+          .single();
+
+        if (created.error || !created.data?.id) {
+          throw new Error(created.error?.message ?? `Failed to create ingredient: ${ing.name}`);
+        }
+
+        ingredientIdMap.set(item.ingredient_id, created.data.id);
+      }
+
+      const itemPayload = items
+        .filter((it) => ingredientIdMap.has(it.ingredient_id))
+        .map((it, idx) => ({
+          recipe_id: newRecipe.id,
+          ingredient_id: ingredientIdMap.get(it.ingredient_id)!,
+          qty: it.qty,
+          unit: it.unit,
+          sort_order: idx + 1,
+        }));
+
+      if (itemPayload.length > 0) {
+        const { error: itemsErr } = await supabase.from("recipe_items").insert(itemPayload);
+        if (itemsErr) throw new Error(itemsErr.message);
+      }
+
+      router.push(`/recipes/${newRecipe.id}`);
+    } catch (e: any) {
+      setMessage(e?.message ?? "Failed to import recipe");
+    } finally {
+      setImportingRecipe(false);
+    }
   }
 
   async function addItem() {
@@ -704,16 +793,33 @@ export default function RecipeDetailPage() {
             <div style={{ marginTop: 6, color: "#666" }}>
               Default servings: {recipe.servings_default ?? "—"}
             </div>
+            <div style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                onClick={importRecipe}
+                disabled={importingRecipe}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  border: "1px solid #333",
+                  background: importingRecipe ? "#eee" : "#fff",
+                }}
+              >
+                {importingRecipe ? "Importing…" : "Import recipe"}
+              </button>
+            </div>
             <div style={{ marginTop: 8, fontSize: 13, color: "#666" }}>
-              Read-only public recipe
+              Import to copy this recipe and its ingredients into your own household.
             </div>
           </div>
         )}
       </div>
 
-      <div style={{ marginTop: 14 }}>
-        <AddToPlan recipeId={recipeId} />
-      </div>
+      {isOwner && (
+        <div style={{ marginTop: 14 }}>
+          <AddToPlan recipeId={recipeId} />
+        </div>
+      )}
 
       <div style={{ marginTop: 22, padding: 16, border: "1px solid #ddd", borderRadius: 12 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>Meal tags</h2>
@@ -1103,7 +1209,7 @@ export default function RecipeDetailPage() {
         )}
       </div>
 
-      {!isOwner && message && (
+      {message && (
         <div style={{ marginTop: 16, padding: 12, background: "#f5f5f5", borderRadius: 10 }}>
           {message}
         </div>
