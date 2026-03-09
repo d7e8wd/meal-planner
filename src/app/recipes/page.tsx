@@ -7,10 +7,12 @@ export const dynamic = "force-dynamic";
 
 type Recipe = {
   id: string;
+  household_id: string;
   name: string;
   servings_default: number | null;
   created_at: string;
   meal_tags: string[] | null;
+  is_public: boolean;
 };
 
 type MealTag = "breakfast" | "lunch" | "dinner" | "snack";
@@ -26,10 +28,19 @@ function hasTag(r: Recipe, tag: MealTag) {
   return tags.includes(tag);
 }
 
-function renderRecipeRow(r: Recipe) {
+function sortRecipes(recipes: Recipe[], myHouseholdId: string | null) {
+  return [...recipes].sort((a, b) => {
+    const aMine = a.household_id === myHouseholdId ? 1 : 0;
+    const bMine = b.household_id === myHouseholdId ? 1 : 0;
+    if (aMine !== bMine) return bMine - aMine; // mine first
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function renderRecipeRow(r: Recipe, isMine: boolean) {
   return (
     <div
-      key={`${r.id}`}
+      key={r.id}
       style={{
         display: "flex",
         justifyContent: "space-between",
@@ -51,15 +62,35 @@ function renderRecipeRow(r: Recipe) {
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
+            marginRight: 8,
           }}
           title={r.name}
         >
           {r.name}
         </a>
+
+        {!isMine && r.is_public && (
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: "#555",
+              background: "#f3f3f3",
+              border: "1px solid #ddd",
+              borderRadius: 999,
+              padding: "2px 8px",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Public
+          </span>
+        )}
+
         <div style={{ fontSize: 13, color: "#666" }}>
           Servings: {r.servings_default ?? "—"}
         </div>
       </div>
+
       <div style={{ fontSize: 13, color: "#666" }}>
         {new Date(r.created_at).toLocaleDateString("en-GB")}
       </div>
@@ -123,6 +154,7 @@ export default function RecipesPage() {
   const router = useRouter();
 
   const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [myHouseholdId, setMyHouseholdId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
 
@@ -134,9 +166,23 @@ export default function RecipesPage() {
     setLoading(true);
     setMessage(null);
 
+    const { data: membership, error: memErr } = await supabase
+      .from("household_members")
+      .select("household_id")
+      .limit(1)
+      .maybeSingle();
+
+    if (memErr) {
+      setLoading(false);
+      setMessage("Error finding household: " + memErr.message);
+      return;
+    }
+
+    setMyHouseholdId(membership?.household_id ?? null);
+
     const { data, error } = await supabase
       .from("recipes")
-      .select("id,name,servings_default,created_at,meal_tags")
+      .select("id,household_id,name,servings_default,created_at,meal_tags,is_public")
       .order("created_at", { ascending: false });
 
     setLoading(false);
@@ -163,7 +209,6 @@ export default function RecipesPage() {
 
     setCreating(true);
 
-    // Find user's household_id via membership
     const { data: membership, error: memErr } = await supabase
       .from("household_members")
       .select("household_id")
@@ -182,7 +227,6 @@ export default function RecipesPage() {
       return;
     }
 
-    // Insert and get the new recipe id back so we can navigate straight to it
     const { data: created, error } = await supabase
       .from("recipes")
       .insert({
@@ -208,27 +252,27 @@ export default function RecipesPage() {
       return;
     }
 
-    // Clear form + go to the recipe detail page for building
     setName("");
     setServings(2);
     router.push(`/recipes/${newId}`);
   };
 
   const grouped = useMemo(() => {
-    const dinner = recipes.filter((r) => hasTag(r, "dinner"));
-    const lunch = recipes.filter((r) => hasTag(r, "lunch"));
-    const breakfast = recipes.filter((r) => hasTag(r, "breakfast"));
-    const snack = recipes.filter((r) => hasTag(r, "snack"));
+    const dinner = sortRecipes(recipes.filter((r) => hasTag(r, "dinner")), myHouseholdId);
+    const lunch = sortRecipes(recipes.filter((r) => hasTag(r, "lunch")), myHouseholdId);
+    const breakfast = sortRecipes(recipes.filter((r) => hasTag(r, "breakfast")), myHouseholdId);
+    const snack = sortRecipes(recipes.filter((r) => hasTag(r, "snack")), myHouseholdId);
 
     const taggedIds = new Set<string>();
     for (const r of recipes) {
       const tags = (r.meal_tags ?? []).map(normaliseTag).filter(Boolean) as MealTag[];
       if (tags.length) taggedIds.add(r.id);
     }
-    const other = recipes.filter((r) => !taggedIds.has(r.id));
+
+    const other = sortRecipes(recipes.filter((r) => !taggedIds.has(r.id)), myHouseholdId);
 
     return { dinner, lunch, breakfast, snack, other };
-  }, [recipes]);
+  }, [recipes, myHouseholdId]);
 
   return (
     <div style={{ padding: 40, maxWidth: 800 }}>
@@ -310,7 +354,7 @@ export default function RecipesPage() {
           <div style={{ display: "grid", gap: 12 }}>
             <Section title="Dinner" count={grouped.dinner.length} defaultOpen>
               {grouped.dinner.length ? (
-                grouped.dinner.map(renderRecipeRow)
+                grouped.dinner.map((r) => renderRecipeRow(r, r.household_id === myHouseholdId))
               ) : (
                 <div style={{ padding: 12, color: "#666" }}>No dinner recipes.</div>
               )}
@@ -318,7 +362,7 @@ export default function RecipesPage() {
 
             <Section title="Lunch" count={grouped.lunch.length}>
               {grouped.lunch.length ? (
-                grouped.lunch.map(renderRecipeRow)
+                grouped.lunch.map((r) => renderRecipeRow(r, r.household_id === myHouseholdId))
               ) : (
                 <div style={{ padding: 12, color: "#666" }}>No lunch recipes.</div>
               )}
@@ -326,7 +370,7 @@ export default function RecipesPage() {
 
             <Section title="Breakfast" count={grouped.breakfast.length}>
               {grouped.breakfast.length ? (
-                grouped.breakfast.map(renderRecipeRow)
+                grouped.breakfast.map((r) => renderRecipeRow(r, r.household_id === myHouseholdId))
               ) : (
                 <div style={{ padding: 12, color: "#666" }}>No breakfast recipes.</div>
               )}
@@ -334,7 +378,7 @@ export default function RecipesPage() {
 
             <Section title="Snack" count={grouped.snack.length}>
               {grouped.snack.length ? (
-                grouped.snack.map(renderRecipeRow)
+                grouped.snack.map((r) => renderRecipeRow(r, r.household_id === myHouseholdId))
               ) : (
                 <div style={{ padding: 12, color: "#666" }}>No snack recipes.</div>
               )}
@@ -342,7 +386,7 @@ export default function RecipesPage() {
 
             <Section title="Other" count={grouped.other.length}>
               {grouped.other.length ? (
-                grouped.other.map(renderRecipeRow)
+                grouped.other.map((r) => renderRecipeRow(r, r.household_id === myHouseholdId))
               ) : (
                 <div style={{ padding: 12, color: "#666" }}>No untagged recipes.</div>
               )}
